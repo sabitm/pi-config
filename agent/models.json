@@ -1,0 +1,14 @@
+{
+  "providers": {
+    "airouter": {
+      "baseUrl": "http://localhost:8080/v1",
+      "api": "openai-completions",
+      "apiKey": "airouter",
+      "models": [
+        { "id": "default" },
+        { "id": "subagent" },
+        { "id": "subagent-2" }
+      ]
+    }
+  }
+}
