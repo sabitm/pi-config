@@ -5,9 +5,9 @@
       "api": "openai-completions",
       "apiKey": "airouter",
       "models": [
-        { "id": "default", "contextWindow": 180000 },
-        { "id": "subagent", "contextWindow": 180000 },
-        { "id": "subagent-2", "contextWindow": 180000 }
+        { "id": "default", "contextWindow": 200000 },
+        { "id": "subagent", "contextWindow": 200000 },
+        { "id": "subagent-2", "contextWindow": 200000 }
       ]
     }
   }
