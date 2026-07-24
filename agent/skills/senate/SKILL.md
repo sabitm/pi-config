@@ -35,11 +35,11 @@ tasks: [
   { agent: "subagent-2", task: "<identical brief>" }
 ]
 ```
+*(If a subagent fails/errors, proceed with remaining inputs and flag in report.)*
 
-4. **Judge** — table: topic | sub-1 | sub-2 | chair pick | why  
-   (agree / pick 1 / pick 2 / hybrid / chair override).
-5. **Merge** into one plan; list defaults if user says "as written".
-6. **Ask approval.** Implement only after yes; re-plan if implementation breaks a decision.
+4. **Judge** — evaluate Chair Draft vs Sub-1 vs Sub-2 on merits (agree / pick 1 / pick 2 / hybrid / chair override).
+5. **Merge** into one cohesive plan; list defaults if user says "as written".
+6. **Ask approval.** Implement only after explicit 'yes'; re-plan if implementation breaks a decision.
 
 ## Brief (identical to both)
 
@@ -71,9 +71,9 @@ Be concrete (types, signatures, failure modes). Return only the plan.
 # Senate: <title>
 
 ## Judgment
-| Topic | Sub-1 | Sub-2 | Pick |
-|-------|-------|-------|------|
-| ...   | ...   | ...   | ...  |
+| Topic | Chair Draft | Sub-1 | Sub-2 | Pick | Rationale |
+|-------|-------------|-------|-------|------|-----------|
+| ...   | ...         | ...   | ...   | ...  | ...       |
 
 ## Merged plan
 <full plan + defaults for "as written">
