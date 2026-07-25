@@ -74,7 +74,12 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         };
       }
 
-      const { rendered: msgs, rawMessages } = loadAllMessages(sessionFile, false, lineageEntryIds);
+      const { rendered: msgs, rawMessages } = loadAllMessages(
+        sessionFile,
+        false,
+        lineageEntryIds,
+        hasExpand ? expandSet : undefined,
+      );
       const allResults = params.query?.trim()
         ? searchEntries(msgs, rawMessages, params.query)
         : msgs.slice(-DEFAULT_RECENT);
@@ -91,7 +96,32 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         const footer = page < totalPages
           ? `\n--- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""} for more results ---`
           : "";
-        const output = formatRecallOutput(pageResults, params.query, header) + footer;
+        let body = formatRecallOutput(pageResults, params.query, header, expandSet);
+
+        // Expanded entries not on the current page: append their full verbatim
+        // content so the caller recovers detail without paging. Soft-note any
+        // requested expand indices absent from this scope (out-of-scope/missing).
+        const onPage = new Set(pageResults.map((r) => r.index));
+        if (hasExpand) {
+          const byIndex = new Map(msgs.map((m) => [m.index, m]));
+          const missing: number[] = [];
+          const extra: typeof pageResults = [];
+          for (const i of expandSet) {
+            const m = byIndex.get(i);
+            if (!m) { missing.push(i); continue; }
+            if (!onPage.has(i)) extra.push(m);
+          }
+          const sections: string[] = [body];
+          if (extra.length > 0) {
+            sections.push(`--- Expanded (full) ---\n${formatRecallOutput(extra, undefined, undefined, expandSet)}`);
+          }
+          if (missing.length > 0) {
+            sections.push(`--- Not in ${scope === "all" ? "session history" : "active lineage"}: ${missing.join(", ")} ---`);
+          }
+          body = sections.join("\n\n");
+        }
+
+        const output = body + footer;
         return {
           content: [{ type: "text", text: output }],
           details: undefined,

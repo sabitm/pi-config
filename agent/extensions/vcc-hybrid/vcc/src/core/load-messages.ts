@@ -11,6 +11,8 @@ export const loadAllMessages = (
   sessionFile: string,
   full: boolean,
   allowedEntryIds?: Set<string>,
+  /** When set, render these entry indices fully (verbatim) regardless of `full`. */
+  fullIndices?: Set<number>,
 ): LoadedMessages => {
   const content = readFileSync(sessionFile, "utf-8");
   const entries: any[] = [];
@@ -28,7 +30,8 @@ export const loadAllMessages = (
 
     const allowed = !allowedEntryIds || allowedEntryIds.has(e.id);
     if (allowed) {
-      rendered.push(renderMessage(e.message, messageIndex, full));
+      const renderFull = full || (fullIndices != null && fullIndices.has(messageIndex));
+      rendered.push(renderMessage(e.message, messageIndex, renderFull));
       rawMessages.push(e.message);
     }
     messageIndex++;
