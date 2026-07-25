@@ -548,13 +548,13 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       tokenEstimate,
       summaryLength: summary.length,
       summaryPreview: summary.slice(0, 500),
-      sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
+      sections: [...summary.matchAll(/^##\s+(.+)$/gm)].map((m) => m[1]),
     });
 
     const details: PiVccCompactionDetails = {
       compactor: "pi-vcc",
       version: 1,
-      sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
+      sections: [...summary.matchAll(/^##\s+(.+)$/gm)].map((m) => m[1]),
       sourceMessageCount: agentMessages.length,
       previousSummaryUsed: Boolean(preparation.previousSummary),
       reason,
