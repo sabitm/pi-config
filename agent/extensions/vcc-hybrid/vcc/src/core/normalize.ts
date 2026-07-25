@@ -18,7 +18,11 @@ const normalizeOne = (msg: Message, msgIndex: number): NormalizedBlock[] => {
     return blocks.length > 0 ? blocks : [{ kind: "user", text: "", sourceIndex: msgIndex }];
   }
 
-  if (msg.role === "bashExecution") {
+  // pi-ai's Message union no longer includes a "bashExecution" role, so the
+  // literal comparison is widened to string to stay typeable. The branch is
+  // defensive: command/output/exitCode are accessed as any since they are not
+  // part of the current Message union (legacy/runtime-only shape).
+  if ((msg as { role: string }).role === "bashExecution") {
     const cmd = (msg as any).command ?? "";
     const out = (msg as any).output ?? "";
     const exit = (msg as any).exitCode;

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import type { CompactionEntry } from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "fs";
 import { compileRanked } from "../core/summarize";
 import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-args";
@@ -387,7 +388,9 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     });
     const ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns);
     if (!ownCut.ok) {
-      const lastComp = [...branchEntries].reverse().find((e: any) => e.type === "compaction");
+      const lastComp = [...branchEntries].reverse().find(
+        (e: any): e is CompactionEntry => e.type === "compaction",
+      );
       const lastCompIdx = lastComp ? (branchEntries as any[]).indexOf(lastComp) : -1;
 
       // Recompute liveMessages view (same logic as buildOwnCut) for diagnostic
