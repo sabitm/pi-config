@@ -4,6 +4,7 @@ import { searchEntries } from "../core/search-entries";
 import { formatRecallOutput } from "../core/format-recall";
 import { getActiveLineageEntryIds } from "../core/lineage";
 import { parseRecallScope } from "../core/recall-scope";
+import { offLineageHint } from "../core/off-lineage-hint";
 
 const PAGE_SIZE = 5;
 const DEFAULT_RECENT = 25;
@@ -58,7 +59,10 @@ export const registerVccRecallCommand = (pi: ExtensionAPI) => {
       const footer = page < totalPages
         ? `\n--- /pi-vcc-recall ${query}${parsed.scope === "all" ? " scope:all" : ""} page:${page + 1} ---`
         : "";
-      const output = formatRecallOutput(pageResults, query, header) + footer;
+      const crossBranch = parsed.scope === "lineage"
+        ? offLineageHint(sessionFile, query, allResults.length)
+        : "";
+      const output = formatRecallOutput(pageResults, query, header) + footer + crossBranch;
       pi.sendMessage({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: true });
     },
   });

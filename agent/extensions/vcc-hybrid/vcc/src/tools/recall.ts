@@ -5,6 +5,7 @@ import { searchEntries } from "../core/search-entries";
 import { formatRecallOutput } from "../core/format-recall";
 import { getActiveLineageEntryIds } from "../core/lineage";
 import { normalizeRecallScope } from "../core/recall-scope";
+import { offLineageHint } from "../core/off-lineage-hint";
 
 const DEFAULT_RECENT = 25;
 const PAGE_SIZE = 5;
@@ -96,6 +97,9 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         const footer = page < totalPages
           ? `\n--- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""} for more results ---`
           : "";
+        const crossBranch = scope === "lineage"
+          ? offLineageHint(sessionFile, params.query, allResults.length)
+          : "";
         let body = formatRecallOutput(pageResults, params.query, header, expandSet);
 
         // Expanded entries not on the current page: append their full verbatim
@@ -121,7 +125,7 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
           body = sections.join("\n\n");
         }
 
-        const output = body + footer;
+        const output = body + footer + crossBranch;
         return {
           content: [{ type: "text", text: output }],
           details: undefined,
