@@ -5,6 +5,8 @@ import { renderMessage, type RenderedEntry } from "./render-entries";
 export interface LoadedMessages {
   rendered: RenderedEntry[];
   rawMessages: Message[];
+  /** Session entry id parallel to rendered/rawMessages (for post-load lineage filtering). */
+  entryIds: (string | undefined)[];
 }
 
 export const loadAllMessages = (
@@ -22,6 +24,7 @@ export const loadAllMessages = (
   }
   const rendered: RenderedEntry[] = [];
   const rawMessages: Message[] = [];
+  const entryIds: (string | undefined)[] = [];
 
   let messageIndex = 0;
   for (const e of entries) {
@@ -33,9 +36,36 @@ export const loadAllMessages = (
       const renderFull = full || (fullIndices != null && fullIndices.has(messageIndex));
       rendered.push(renderMessage(e.message, messageIndex, renderFull));
       rawMessages.push(e.message);
+      entryIds.push(typeof e.id === "string" ? e.id : undefined);
     }
     messageIndex++;
   }
 
-  return { rendered, rawMessages };
+  return { rendered, rawMessages, entryIds };
+};
+
+/**
+ * Pure post-load filter: select loaded entries whose session id is in `ids`.
+ * Returns a LoadedMessages subset (entryIds carried through). When `ids` is
+ * undefined, returns the input unchanged. messageIndex is assigned at load
+ * time and preserved here, so a filtered subset is byte-identical to loading
+ * with the same id filter — but computed from one load instead of two.
+ */
+export const subsetByEntryIds = (
+  loaded: LoadedMessages,
+  ids?: Set<string>,
+): LoadedMessages => {
+  if (!ids) return loaded;
+  const rendered: RenderedEntry[] = [];
+  const rawMessages: Message[] = [];
+  const entryIds: (string | undefined)[] = [];
+  for (let i = 0; i < loaded.rendered.length; i++) {
+    const id = loaded.entryIds[i];
+    if (id && ids.has(id)) {
+      rendered.push(loaded.rendered[i]);
+      rawMessages.push(loaded.rawMessages[i]);
+      entryIds.push(id);
+    }
+  }
+  return { rendered, rawMessages, entryIds };
 };

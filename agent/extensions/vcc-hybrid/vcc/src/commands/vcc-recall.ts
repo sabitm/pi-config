@@ -1,10 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { loadAllMessages } from "../core/load-messages";
+import { loadAllMessages, subsetByEntryIds } from "../core/load-messages";
 import { searchEntries } from "../core/search-entries";
 import { formatRecallOutput } from "../core/format-recall";
 import { getActiveLineageEntryIds } from "../core/lineage";
 import { parseRecallScope } from "../core/recall-scope";
-import { offLineageHint } from "../core/off-lineage-hint";
+import { offLineageHintFromLoaded } from "../core/off-lineage-hint";
 
 const PAGE_SIZE = 5;
 const DEFAULT_RECENT = 25;
@@ -25,9 +25,10 @@ export const registerVccRecallCommand = (pi: ExtensionAPI) => {
         ? getActiveLineageEntryIds(ctx.sessionManager)
         : undefined;
       if (!parsed.text) {
-        // No query: show recent
-        const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
-        const recent = rendered.slice(-DEFAULT_RECENT);
+        // No query: show recent. One load, derive scope subset post-load.
+        const loaded = loadAllMessages(sessionFile, false, undefined);
+        const scoped = subsetByEntryIds(loaded, lineageEntryIds);
+        const recent = scoped.rendered.slice(-DEFAULT_RECENT);
         const output = (parsed.scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(recent);
         pi.sendMessage({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: true });
         return;
@@ -39,15 +40,19 @@ export const registerVccRecallCommand = (pi: ExtensionAPI) => {
       const query = parsed.text.replace(/\bpage:\d+\b/i, "").trim();
 
       if (!query) {
-        const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
-        const recent = rendered.slice(-DEFAULT_RECENT);
+        const loaded = loadAllMessages(sessionFile, false, undefined);
+        const scoped = subsetByEntryIds(loaded, lineageEntryIds);
+        const recent = scoped.rendered.slice(-DEFAULT_RECENT);
         const output = (parsed.scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(recent);
         pi.sendMessage({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: true });
         return;
       }
 
-      const { rendered, rawMessages } = loadAllMessages(sessionFile, false, lineageEntryIds);
-      const allResults = searchEntries(rendered, rawMessages, query);
+      // One unfiltered load; derive lineage subset post-load so BM25 ranking on
+      // the subset is identical to a scoped load, and the hint reuses this load.
+      const loaded = loadAllMessages(sessionFile, false, undefined);
+      const scoped = subsetByEntryIds(loaded, lineageEntryIds);
+      const allResults = searchEntries(scoped.rendered, scoped.rawMessages, query);
 
       const start = (page - 1) * PAGE_SIZE;
       const pageResults = allResults.slice(start, start + PAGE_SIZE);
@@ -60,7 +65,7 @@ export const registerVccRecallCommand = (pi: ExtensionAPI) => {
         ? `\n--- /pi-vcc-recall ${query}${parsed.scope === "all" ? " scope:all" : ""} page:${page + 1} ---`
         : "";
       const crossBranch = parsed.scope === "lineage"
-        ? offLineageHint(sessionFile, query, allResults.length)
+        ? offLineageHintFromLoaded(loaded.rendered, loaded.rawMessages, query, allResults.length)
         : "";
       const output = formatRecallOutput(pageResults, query, header) + footer + crossBranch;
       pi.sendMessage({ customType: "vcc-recall", content: output, display: true }, { triggerTurn: true });

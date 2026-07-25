@@ -1,3 +1,4 @@
+**node_modules**
 /agent/sessions
 /agent/trust.json
 /agent/auth.json

@@ -1,11 +1,11 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { loadAllMessages } from "../core/load-messages";
+import { loadAllMessages, subsetByEntryIds } from "../core/load-messages";
 import { searchEntries } from "../core/search-entries";
 import { formatRecallOutput } from "../core/format-recall";
 import { getActiveLineageEntryIds } from "../core/lineage";
 import { normalizeRecallScope } from "../core/recall-scope";
-import { offLineageHint } from "../core/off-lineage-hint";
+import { offLineageHintFromLoaded } from "../core/off-lineage-hint";
 
 const DEFAULT_RECENT = 25;
 const PAGE_SIZE = 5;
@@ -56,7 +56,12 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
       const hasExpand = expandSet.size > 0;
 
       if (hasExpand && !params.query) {
-        const { rendered: fullMsgs } = loadAllMessages(sessionFile, true, lineageEntryIds);
+        // Load full corpus once (full=true so expand renders verbatim), then
+        // filter to the requested scope post-load. Same result as a scoped
+        // load, without re-reading the file for the hint.
+        const loaded = loadAllMessages(sessionFile, true, undefined);
+        const scoped = subsetByEntryIds(loaded, lineageEntryIds);
+        const fullMsgs = scoped.rendered;
         const requested = [...expandSet];
         const byIndex = new Map(fullMsgs.map((m) => [m.index, m]));
         const invalid = invalidExpandIndices(requested, new Set(byIndex.keys()));
@@ -75,14 +80,20 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         };
       }
 
-      const { rendered: msgs, rawMessages } = loadAllMessages(
+      // One unfiltered load (with fullIndices for expand). The lineage subset is
+      // derived post-load via subsetByEntryIds, so lineage BM25 ranking is
+      // identical to a scoped load, and the hint reuses the same load.
+      const loaded = loadAllMessages(
         sessionFile,
         false,
-        lineageEntryIds,
+        undefined,
         hasExpand ? expandSet : undefined,
       );
+      const scoped = subsetByEntryIds(loaded, lineageEntryIds);
+      const msgs = scoped.rendered;
+      const scopedRaw = scoped.rawMessages;
       const allResults = params.query?.trim()
-        ? searchEntries(msgs, rawMessages, params.query)
+        ? searchEntries(msgs, scopedRaw, params.query)
         : msgs.slice(-DEFAULT_RECENT);
 
       if (params.query?.trim()) {
@@ -98,7 +109,7 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
           ? `\n--- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""} for more results ---`
           : "";
         const crossBranch = scope === "lineage"
-          ? offLineageHint(sessionFile, params.query, allResults.length)
+          ? offLineageHintFromLoaded(loaded.rendered, loaded.rawMessages, params.query, allResults.length)
           : "";
         let body = formatRecallOutput(pageResults, params.query, header, expandSet);
 
