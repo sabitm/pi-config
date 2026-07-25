@@ -36,6 +36,8 @@ const HYBRID_SYSTEM_PROMPT = `You are a context summarization assistant. Below i
 
 Preserve EVERY file path, function name, identifier, and error message verbatim from the distillate. Do not invent facts not present. Do not continue the conversation or respond to questions in it. ONLY output the structured summary.
 
+TECHNICAL CONTRACTS ARE HIGH-RISK: copy them character-for-character, never paraphrase. This includes fenced code blocks, function signatures, byte/hex sequences (e.g. 0x78, adler32), numeric constants, exact API names, and error strings. A directionally-correct but imprecise restatement (e.g. summarizing a byte-level protocol detail as "prepends a header") produces silently-wrong downstream code. When a distillate line describes a precise contract, reproduce its exact wording or quote the code verbatim rather than rephrasing it.
+
 Use this format:
 
 ## Goal
