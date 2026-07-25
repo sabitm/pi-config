@@ -24,7 +24,7 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
       "vcc_recall: Search history; default scope is active lineage. Use scope:'all' for off-lineage branches.",
     parameters: Type.Object({
       query: Type.Optional(
-        Type.String({ description: "Search terms or regex pattern (e.g. 'hook|inject', 'fail.*build'). Multi-word = OR ranked by relevance." }),
+        Type.String({ description: "Search terms or regex pattern (e.g. 'hook|inject', 'fail.*build'). Multi-word = OR ranked by relevance. Use \"double quotes\" for required contiguous phrase matches." }),
       ),
       expand: Type.Optional(
         Type.Array(Type.Number(), { description: "Entry indices to return full untruncated content for" }),

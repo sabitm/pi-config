@@ -25,6 +25,54 @@ const safeRegex = (pattern: string): RegExp => {
 const looksLikeRegex = (query: string): boolean =>
   /[|*+?{}()[\]\\^$.]/.test(query);
 
+/**
+ * Extract "double-quoted" phrase segments from a query. Returns the phrases
+ * (unescaped literals, NOT regex) and the leftover unquoted remainder
+ * (whitespace-collapsed). Phrases must match as contiguous substrings
+ * (case-insensitive indexOf), independent of any regex interpretation.
+ */
+const parsePhrasesAndRemainder = (
+  query: string,
+): { phrases: string[]; remainder: string } => {
+  const phrases: string[] = [];
+  // Strip each "..." segment, keep what's between/around as remainder.
+  let remainder = "";
+  let i = 0;
+  while (i < query.length) {
+    if (query[i] === '"') {
+      const end = query.indexOf('"', i + 1);
+      if (end === -1) {
+        // Unterminated quote: treat the rest as a literal phrase.
+        phrases.push(query.slice(i + 1));
+        break;
+      }
+      phrases.push(query.slice(i + 1, end));
+      i = end + 1;
+    } else {
+      remainder += query[i];
+      i++;
+    }
+  }
+  return { phrases: phrases.filter((p) => p.length > 0), remainder: remainder.replace(/\s+/g, " ").trim() };
+};
+
+/** Case-insensitive contiguous substring match (escaped literal, not regex). */
+const containsLiteral = (hay: string, phrase: string): boolean =>
+  hay.toLowerCase().includes(phrase.toLowerCase());
+
+/** Count occurrences of a literal phrase (case-insensitive) in text. */
+const literalTermFreq = (text: string, phrase: string): number => {
+  const hay = text.toLowerCase();
+  const needle = phrase.toLowerCase();
+  let count = 0;
+  let idx = hay.indexOf(needle);
+  while (idx !== -1) {
+    count++;
+    idx = hay.indexOf(needle, idx + needle.length);
+  }
+  return count;
+};
+
 /** Build a regex for snippet highlighting — matches first available term. */
 const snippetRegex = (terms: string[]): RegExp => {
   const alts = terms.map((t) => {
@@ -163,6 +211,69 @@ export const searchEntries = (
   if (!query?.trim()) return entries;
 
   const rawQuery = query.trim();
+
+  // Quoted-phrase path: any "..." segment is a required contiguous substring
+  // match (case-insensitive indexOf, NOT regex). All phrases must appear. The
+  // unquoted remainder keeps its default semantics (regex if it looks like one,
+  // else BM25 OR-ranking) and only ranks among phrase-matching docs.
+  const { phrases, remainder } = parsePhrasesAndRemainder(rawQuery);
+  if (phrases.length > 0) {
+    const remainderIsRegex = remainder.length > 0 && looksLikeRegex(remainder);
+    const remainderRegex = remainderIsRegex ? safeRegex(remainder) : null;
+    const remainderTerms =
+      !remainderIsRegex && remainder ? filterStopwords(remainder.split(/\s+/)) : [];
+    const phraseSnipRe = new RegExp(phrases.map(escapeRegex).join("|"), "i");
+
+    const candidates: Array<{
+      e: RenderedEntry;
+      text: string;
+      hay: string;
+      phraseOccurrences: number;
+      remainderMatch: number;
+    }> = [];
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      const msg = messages[i];
+      const text = msg ? fullText(msg) : e.summary;
+      const filePart = e.files?.join(" ") ?? "";
+      const hay = `${e.role} ${text} ${filePart}`;
+      if (!phrases.every((p) => containsLiteral(hay, p))) continue;
+      if (remainderRegex && !remainderRegex.test(hay)) continue;
+      const phraseOccurrences = phrases.reduce((s, p) => s + literalTermFreq(hay, p), 0);
+      const remainderMatch =
+        remainderTerms.length > 0 ? countMatches(hay, remainderTerms) : 0;
+      candidates.push({ e, text, hay, phraseOccurrences, remainderMatch });
+    }
+
+    const scored: Array<{ hit: SearchHit; score: number }> =
+      remainderTerms.length > 0
+        ? (() => {
+            const docs = candidates.map((c) => c.hay);
+            const ctx = buildBM25Context(docs, remainderTerms);
+            return candidates.map((c) => {
+              const bm = bm25Score(c.hay, remainderTerms, ctx);
+              const snip = lineSnippet(c.text, phraseSnipRe);
+              return {
+                hit: {
+                  ...c.e,
+                  snippet: snip,
+                  matchCount: c.remainderMatch + phrases.length,
+                },
+                score: bm + c.phraseOccurrences * 0.5,
+              };
+            });
+          })()
+        : candidates.map((c) => {
+            const snip = lineSnippet(c.text, phraseSnipRe);
+            return {
+              hit: { ...c.e, snippet: snip, matchCount: phrases.length },
+              score: c.phraseOccurrences,
+            };
+          });
+
+    scored.sort((a, b) => b.score - a.score || a.hit.index - b.hit.index);
+    return scored.map((s) => s.hit);
+  }
 
   // If query looks like a single regex pattern (contains metacharacters),
   // treat the whole thing as one pattern — don't split into terms
