@@ -34,6 +34,8 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
+const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_RETRY_DELAY_MS = 2000;
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -158,6 +160,15 @@ interface SingleResult {
 	stopReason?: string;
 	errorMessage?: string;
 	step?: number;
+	attempts?: number;
+	retries?: number;
+	retryReasons?: string[];
+	retrying?: boolean;
+}
+
+interface RetryPolicy {
+	maxRetries: number;
+	retryDelayMs: number;
 }
 
 interface SubagentDetails {
@@ -188,6 +199,61 @@ function getResultOutput(result: SingleResult): string {
 		return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
 	}
 	return getFinalOutput(result.messages) || "(no output)";
+}
+
+function createEmptyUsage(): UsageStats {
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+}
+
+function addUsage(target: UsageStats, source: UsageStats): void {
+	target.input += source.input;
+	target.output += source.output;
+	target.cacheRead += source.cacheRead;
+	target.cacheWrite += source.cacheWrite;
+	target.cost += source.cost;
+	target.turns += source.turns;
+	if (source.contextTokens > 0) target.contextTokens = source.contextTokens;
+}
+
+function cloneUsage(usage: UsageStats): UsageStats {
+	return { ...usage };
+}
+
+function compactRetryReason(reason: string): string {
+	const compacted = reason.replace(/\s+/g, " ").trim();
+	if (!compacted) return "error";
+	return compacted.length > 240 ? `${compacted.slice(0, 237)}...` : compacted;
+}
+
+function getRetryFailureReason(result: SingleResult): string | undefined {
+	if (result.stopReason === "aborted") return undefined;
+	if (result.stopReason === "error") return compactRetryReason(result.errorMessage || result.stderr || "model error");
+	if (result.exitCode !== 0) return compactRetryReason(result.stderr || `exit code ${result.exitCode}`);
+	return undefined;
+}
+
+function appendRetryStats(usageStr: string, result: SingleResult): string {
+	if (!result.retries || result.retries <= 0) return usageStr;
+	const retryStr = `retried ${result.retries} time${result.retries === 1 ? "" : "s"}`;
+	return usageStr ? `${usageStr} ${retryStr}` : retryStr;
+}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return Promise.reject(new Error("Subagent was aborted"));
+	if (ms <= 0) return Promise.resolve();
+
+	return new Promise((resolve, reject) => {
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		const onAbort = () => {
+			if (timeout) clearTimeout(timeout);
+			reject(new Error("Subagent was aborted"));
+		};
+		timeout = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 function truncateParallelOutput(output: string): string {
@@ -264,39 +330,25 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
-async function runSingleAgent(
+async function runSingleAgentAttempt(
 	defaultCwd: string,
-	agents: AgentConfig[],
+	agent: AgentConfig,
 	agentName: string,
 	task: string,
 	cwd: string | undefined,
 	step: number | undefined,
+	attempt: number,
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
-): Promise<SingleResult> {
-	const agent = agents.find((a) => a.name === agentName);
-
-	if (!agent) {
-		const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-		return {
-			agent: agentName,
-			agentSource: "unknown",
-			task,
-			exitCode: 1,
-			messages: [],
-			stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-			step,
-		};
-	}
-
+): Promise<{ result: SingleResult; wasAborted: boolean }> {
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
 	if (agent.model) args.push("--model", agent.model);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
+	let wasAborted = false;
 
 	const currentResult: SingleResult = {
 		agent: agentName,
@@ -305,9 +357,12 @@ async function runSingleAgent(
 		exitCode: 0,
 		messages: [],
 		stderr: "",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+		usage: createEmptyUsage(),
 		model: agent.model,
 		step,
+		attempts: attempt,
+		// Keep retrying visible for the whole in-flight retry attempt (not just the delay).
+		...(attempt > 1 ? { retries: attempt - 1, retrying: true as const } : {}),
 	};
 
 	const emitUpdate = () => {
@@ -328,7 +383,6 @@ async function runSingleAgent(
 		}
 
 		args.push(`Task: ${task}`);
-		let wasAborted = false;
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
@@ -338,6 +392,14 @@ async function runSingleAgent(
 				stdio: ["ignore", "pipe", "pipe"],
 			});
 			let buffer = "";
+			let settled = false;
+			let killTimer: ReturnType<typeof setTimeout> | undefined;
+			let removeAbortListener: (() => void) | undefined;
+
+			const cleanup = () => {
+				if (removeAbortListener) removeAbortListener();
+				if (killTimer) clearTimeout(killTimer);
+			};
 
 			const processLine = (line: string) => {
 				if (!line.trim()) return;
@@ -376,6 +438,14 @@ async function runSingleAgent(
 				}
 			};
 
+			const finish = (code: number) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				if (buffer.trim()) processLine(buffer);
+				resolve(code);
+			};
+
 			proc.stdout.on("data", (data) => {
 				buffer += data.toString();
 				const lines = buffer.split("\n");
@@ -388,30 +458,46 @@ async function runSingleAgent(
 			});
 
 			proc.on("close", (code) => {
-				if (buffer.trim()) processLine(buffer);
-				resolve(code ?? 0);
+				finish(code ?? 1);
 			});
 
-			proc.on("error", () => {
-				resolve(1);
+			proc.on("error", (error) => {
+				currentResult.stderr += `${currentResult.stderr ? "\n" : ""}Spawn error: ${error.message}`;
+				finish(1);
 			});
 
 			if (signal) {
 				const killProc = () => {
+					if (wasAborted) return;
 					wasAborted = true;
-					proc.kill("SIGTERM");
-					setTimeout(() => {
-						if (!proc.killed) proc.kill("SIGKILL");
+					// proc.killed is true after a successful SIGTERM *send*, not after exit.
+					// Track escalation separately so SIGKILL still fires if the child ignores SIGTERM.
+					let sigkillSent = false;
+					try {
+						proc.kill("SIGTERM");
+					} catch {
+						/* ignore */
+					}
+					killTimer = setTimeout(() => {
+						if (sigkillSent || settled) return;
+						sigkillSent = true;
+						try {
+							proc.kill("SIGKILL");
+						} catch {
+							/* ignore */
+						}
 					}, 5000);
 				};
 				if (signal.aborted) killProc();
-				else signal.addEventListener("abort", killProc, { once: true });
+				else {
+					signal.addEventListener("abort", killProc, { once: true });
+					removeAbortListener = () => signal.removeEventListener("abort", killProc);
+				}
 			}
 		});
 
 		currentResult.exitCode = exitCode;
-		if (wasAborted) throw new Error("Subagent was aborted");
-		return currentResult;
+		return { result: currentResult, wasAborted };
 	} finally {
 		if (tmpPromptPath)
 			try {
@@ -425,6 +511,81 @@ async function runSingleAgent(
 			} catch {
 				/* ignore */
 			}
+	}
+}
+
+async function runSingleAgent(
+	defaultCwd: string,
+	agents: AgentConfig[],
+	agentName: string,
+	task: string,
+	cwd: string | undefined,
+	step: number | undefined,
+	retryPolicy: RetryPolicy,
+	signal: AbortSignal | undefined,
+	onUpdate: OnUpdateCallback | undefined,
+	makeDetails: (results: SingleResult[]) => SubagentDetails,
+): Promise<SingleResult> {
+	const agent = agents.find((a) => a.name === agentName);
+
+	if (!agent) {
+		const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
+		return {
+			agent: agentName,
+			agentSource: "unknown",
+			task,
+			exitCode: 1,
+			messages: [],
+			stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
+			usage: createEmptyUsage(),
+			step,
+		};
+	}
+
+	const cumulativeUsage = createEmptyUsage();
+	const retryReasons: string[] = [];
+
+	for (let attempt = 1; ; attempt++) {
+		const { result, wasAborted } = await runSingleAgentAttempt(
+			defaultCwd,
+			agent,
+			agentName,
+			task,
+			cwd,
+			step,
+			attempt,
+			signal,
+			onUpdate,
+			makeDetails,
+		);
+
+		if (wasAborted) throw new Error("Subagent was aborted");
+
+		addUsage(cumulativeUsage, result.usage);
+		result.usage = cloneUsage(cumulativeUsage);
+		result.attempts = attempt;
+		if (attempt > 1) result.retries = attempt - 1;
+		if (retryReasons.length > 0) result.retryReasons = [...retryReasons];
+		delete result.retrying;
+
+		const retryReason = getRetryFailureReason(result);
+		if (!retryReason || attempt - 1 >= retryPolicy.maxRetries) return result;
+
+		retryReasons.push(retryReason);
+		if (onUpdate) {
+			onUpdate({
+				content: [
+					{
+						type: "text",
+						text: `Retrying ${agentName} after ${retryReason} (retry ${attempt}/${retryPolicy.maxRetries}, next attempt ${attempt + 1}/${retryPolicy.maxRetries + 1}) in ${retryPolicy.retryDelayMs}ms...`,
+					},
+				],
+				details: makeDetails([
+					{ ...result, retries: attempt - 1, retryReasons: [...retryReasons], retrying: true },
+				]),
+			});
+		}
+		await abortableSleep(retryPolicy.retryDelayMs, signal);
 	}
 }
 
@@ -454,6 +615,17 @@ const SubagentParams = Type.Object({
 	confirmProjectAgents: Type.Optional(
 		Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
 	),
+	maxRetries: Type.Optional(
+		Type.Integer({
+			description: "Maximum retries after a subprocess or model error. Default: 3. Use 0 to disable retries.",
+			default: DEFAULT_MAX_RETRIES,
+			minimum: 0,
+			maximum: 10,
+		}),
+	),
+	retryDelayMs: Type.Optional(
+		Type.Integer({ description: "Delay between retries in milliseconds. Default: 2000.", default: DEFAULT_RETRY_DELAY_MS, minimum: 0 }),
+	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 });
 
@@ -464,6 +636,7 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Delegate tasks to specialized subagents with isolated context.",
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
+			"Retries subprocess/model errors by default; user aborts are not retried.",
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
@@ -474,6 +647,10 @@ export default function (pi: ExtensionAPI) {
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
+			const retryPolicy: RetryPolicy = {
+				maxRetries: Math.max(0, Math.min(10, Math.floor(params.maxRetries ?? DEFAULT_MAX_RETRIES))),
+				retryDelayMs: Math.max(0, Math.floor(params.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS)),
+			};
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -557,6 +734,7 @@ export default function (pi: ExtensionAPI) {
 						taskWithContext,
 						step.cwd,
 						i + 1,
+						retryPolicy,
 						signal,
 						chainUpdate,
 						makeDetails("chain"),
@@ -610,8 +788,8 @@ export default function (pi: ExtensionAPI) {
 
 				const emitParallelUpdate = () => {
 					if (onUpdate) {
-						const running = allResults.filter((r) => r.exitCode === -1).length;
-						const done = allResults.filter((r) => r.exitCode !== -1).length;
+						const running = allResults.filter((r) => r.exitCode === -1 || r.retrying).length;
+						const done = allResults.filter((r) => r.exitCode !== -1 && !r.retrying).length;
 						onUpdate({
 							content: [
 								{ type: "text", text: `Parallel: ${done}/${allResults.length} done, ${running} running...` },
@@ -629,6 +807,7 @@ export default function (pi: ExtensionAPI) {
 						t.task,
 						t.cwd,
 						undefined,
+						retryPolicy,
 						signal,
 						// Per-task update callback
 						(partial) => {
@@ -671,6 +850,7 @@ export default function (pi: ExtensionAPI) {
 					params.task,
 					params.cwd,
 					undefined,
+					retryPolicy,
 					signal,
 					onUpdate,
 					makeDetails("single"),
@@ -768,8 +948,9 @@ export default function (pi: ExtensionAPI) {
 
 			if (details.mode === "single" && details.results.length === 1) {
 				const r = details.results[0];
-				const isError = isFailedResult(r);
-				const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
+				const isRetrying = Boolean(r.retrying);
+				const isError = !isRetrying && isFailedResult(r);
+				const icon = isRetrying ? theme.fg("warning", "...") : isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
 				const displayItems = getDisplayItems(r.messages);
 				const finalOutput = getFinalOutput(r.messages);
 
@@ -786,7 +967,7 @@ export default function (pi: ExtensionAPI) {
 					container.addChild(new Spacer(1));
 					container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
 					if (displayItems.length === 0 && !finalOutput) {
-						container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
+						container.addChild(new Text(theme.fg("muted", isRetrying ? "(retrying...)" : "(no output)"), 0, 0));
 					} else {
 						for (const item of displayItems) {
 							if (item.type === "toolCall")
@@ -803,7 +984,7 @@ export default function (pi: ExtensionAPI) {
 							container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
 						}
 					}
-					const usageStr = formatUsageStats(r.usage, r.model);
+					const usageStr = appendRetryStats(formatUsageStats(r.usage, r.model), r);
 					if (usageStr) {
 						container.addChild(new Spacer(1));
 						container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
@@ -814,12 +995,12 @@ export default function (pi: ExtensionAPI) {
 				let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
 				if (isError && r.stopReason) text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
 				if (isError && r.errorMessage) text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
-				else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
+				else if (displayItems.length === 0) text += `\n${theme.fg("muted", isRetrying ? "(retrying...)" : "(no output)")}`;
 				else {
 					text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
 					if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
 				}
-				const usageStr = formatUsageStats(r.usage, r.model);
+				const usageStr = appendRetryStats(formatUsageStats(r.usage, r.model), r);
 				if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
 				return new Text(text, 0, 0);
 			}
@@ -838,8 +1019,13 @@ export default function (pi: ExtensionAPI) {
 			};
 
 			if (details.mode === "chain") {
-				const successCount = details.results.filter((r) => r.exitCode === 0).length;
-				const icon = successCount === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
+				const isRunning = details.results.some((r) => r.retrying);
+				const successCount = details.results.filter((r) => !r.retrying && r.exitCode === 0).length;
+				const icon = isRunning
+					? theme.fg("warning", "...")
+					: successCount === details.results.length
+						? theme.fg("success", "✓")
+						: theme.fg("error", "✗");
 
 				if (expanded) {
 					const container = new Container();
@@ -855,7 +1041,11 @@ export default function (pi: ExtensionAPI) {
 					);
 
 					for (const r of details.results) {
-						const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+						const rIcon = r.retrying
+							? theme.fg("warning", "...")
+							: r.exitCode === 0
+								? theme.fg("success", "✓")
+								: theme.fg("error", "✗");
 						const displayItems = getDisplayItems(r.messages);
 						const finalOutput = getFinalOutput(r.messages);
 
@@ -888,7 +1078,7 @@ export default function (pi: ExtensionAPI) {
 							container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
 						}
 
-						const stepUsage = formatUsageStats(r.usage, r.model);
+						const stepUsage = appendRetryStats(formatUsageStats(r.usage, r.model), r);
 						if (stepUsage) container.addChild(new Text(theme.fg("dim", stepUsage), 0, 0));
 					}
 
@@ -907,10 +1097,14 @@ export default function (pi: ExtensionAPI) {
 					theme.fg("toolTitle", theme.bold("chain ")) +
 					theme.fg("accent", `${successCount}/${details.results.length} steps`);
 				for (const r of details.results) {
-					const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
+					const rIcon = r.retrying
+						? theme.fg("warning", "...")
+						: r.exitCode === 0
+							? theme.fg("success", "✓")
+							: theme.fg("error", "✗");
 					const displayItems = getDisplayItems(r.messages);
 					text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
-					if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
+					if (displayItems.length === 0) text += `\n${theme.fg("muted", r.retrying ? "(retrying...)" : "(no output)")}`;
 					else text += `\n${renderDisplayItems(displayItems, 5)}`;
 				}
 				const usageStr = formatUsageStats(aggregateUsage(details.results));
@@ -920,9 +1114,9 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			if (details.mode === "parallel") {
-				const running = details.results.filter((r) => r.exitCode === -1).length;
-				const successCount = details.results.filter((r) => r.exitCode !== -1 && !isFailedResult(r)).length;
-				const failCount = details.results.filter((r) => r.exitCode !== -1 && isFailedResult(r)).length;
+				const running = details.results.filter((r) => r.exitCode === -1 || r.retrying).length;
+				const successCount = details.results.filter((r) => r.exitCode !== -1 && !r.retrying && !isFailedResult(r)).length;
+				const failCount = details.results.filter((r) => r.exitCode !== -1 && !r.retrying && isFailedResult(r)).length;
 				const isRunning = running > 0;
 				const icon = isRunning
 					? theme.fg("warning", "⏳")
@@ -973,7 +1167,7 @@ export default function (pi: ExtensionAPI) {
 							container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
 						}
 
-						const taskUsage = formatUsageStats(r.usage, r.model);
+						const taskUsage = appendRetryStats(formatUsageStats(r.usage, r.model), r);
 						if (taskUsage) container.addChild(new Text(theme.fg("dim", taskUsage), 0, 0));
 					}
 
@@ -989,7 +1183,7 @@ export default function (pi: ExtensionAPI) {
 				let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
 				for (const r of details.results) {
 					const rIcon =
-						r.exitCode === -1
+						r.exitCode === -1 || r.retrying
 							? theme.fg("warning", "⏳")
 							: isFailedResult(r)
 								? theme.fg("error", "✗")
@@ -997,7 +1191,7 @@ export default function (pi: ExtensionAPI) {
 					const displayItems = getDisplayItems(r.messages);
 					text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
 					if (displayItems.length === 0)
-						text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`;
+						text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : r.retrying ? "(retrying...)" : "(no output)")}`;
 					else text += `\n${renderDisplayItems(displayItems, 5)}`;
 				}
 				if (!isRunning) {
