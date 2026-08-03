@@ -16,7 +16,6 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
@@ -29,13 +28,25 @@ import {
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import {
+	appendRetryStats,
+	buildRetryPolicy,
+	createEmptyUsage,
+	DEFAULT_MAX_RETRIES,
+	DEFAULT_MAX_RETRY_DELAY_MS,
+	DEFAULT_RETRY_DELAY_MS,
+	isFailedResult,
+	type OnUpdateCallback,
+	type RetryPolicy,
+	runSingleAgentWithRetries,
+	type SingleResult,
+	type SubagentDetails,
+} from "./src/retry.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
-const DEFAULT_MAX_RETRIES = 3;
-const DEFAULT_RETRY_DELAY_MS = 2000;
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -138,46 +149,6 @@ function formatToolCall(
 	}
 }
 
-interface UsageStats {
-	input: number;
-	output: number;
-	cacheRead: number;
-	cacheWrite: number;
-	cost: number;
-	contextTokens: number;
-	turns: number;
-}
-
-interface SingleResult {
-	agent: string;
-	agentSource: "user" | "project" | "unknown";
-	task: string;
-	exitCode: number;
-	messages: Message[];
-	stderr: string;
-	usage: UsageStats;
-	model?: string;
-	stopReason?: string;
-	errorMessage?: string;
-	step?: number;
-	attempts?: number;
-	retries?: number;
-	retryReasons?: string[];
-	retrying?: boolean;
-}
-
-interface RetryPolicy {
-	maxRetries: number;
-	retryDelayMs: number;
-}
-
-interface SubagentDetails {
-	mode: "single" | "parallel" | "chain";
-	agentScope: AgentScope;
-	projectAgentsDir: string | null;
-	results: SingleResult[];
-}
-
 function getFinalOutput(messages: Message[]): string {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
@@ -190,70 +161,11 @@ function getFinalOutput(messages: Message[]): string {
 	return "";
 }
 
-function isFailedResult(result: SingleResult): boolean {
-	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-}
-
 function getResultOutput(result: SingleResult): string {
 	if (isFailedResult(result)) {
 		return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
 	}
 	return getFinalOutput(result.messages) || "(no output)";
-}
-
-function createEmptyUsage(): UsageStats {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
-}
-
-function addUsage(target: UsageStats, source: UsageStats): void {
-	target.input += source.input;
-	target.output += source.output;
-	target.cacheRead += source.cacheRead;
-	target.cacheWrite += source.cacheWrite;
-	target.cost += source.cost;
-	target.turns += source.turns;
-	if (source.contextTokens > 0) target.contextTokens = source.contextTokens;
-}
-
-function cloneUsage(usage: UsageStats): UsageStats {
-	return { ...usage };
-}
-
-function compactRetryReason(reason: string): string {
-	const compacted = reason.replace(/\s+/g, " ").trim();
-	if (!compacted) return "error";
-	return compacted.length > 240 ? `${compacted.slice(0, 237)}...` : compacted;
-}
-
-function getRetryFailureReason(result: SingleResult): string | undefined {
-	if (result.stopReason === "aborted") return undefined;
-	if (result.stopReason === "error") return compactRetryReason(result.errorMessage || result.stderr || "model error");
-	if (result.exitCode !== 0) return compactRetryReason(result.stderr || `exit code ${result.exitCode}`);
-	return undefined;
-}
-
-function appendRetryStats(usageStr: string, result: SingleResult): string {
-	if (!result.retries || result.retries <= 0) return usageStr;
-	const retryStr = `retried ${result.retries} time${result.retries === 1 ? "" : "s"}`;
-	return usageStr ? `${usageStr} ${retryStr}` : retryStr;
-}
-
-function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-	if (signal?.aborted) return Promise.reject(new Error("Subagent was aborted"));
-	if (ms <= 0) return Promise.resolve();
-
-	return new Promise((resolve, reject) => {
-		let timeout: ReturnType<typeof setTimeout> | undefined;
-		const onAbort = () => {
-			if (timeout) clearTimeout(timeout);
-			reject(new Error("Subagent was aborted"));
-		};
-		timeout = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
 }
 
 function truncateParallelOutput(output: string): string {
@@ -327,8 +239,6 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 	return { command: "pi", args };
 }
-
-type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
 async function runSingleAgentAttempt(
 	defaultCwd: string,
@@ -542,51 +452,26 @@ async function runSingleAgent(
 		};
 	}
 
-	const cumulativeUsage = createEmptyUsage();
-	const retryReasons: string[] = [];
-
-	for (let attempt = 1; ; attempt++) {
-		const { result, wasAborted } = await runSingleAgentAttempt(
-			defaultCwd,
-			agent,
-			agentName,
-			task,
-			cwd,
-			step,
-			attempt,
-			signal,
-			onUpdate,
-			makeDetails,
-		);
-
-		if (wasAborted) throw new Error("Subagent was aborted");
-
-		addUsage(cumulativeUsage, result.usage);
-		result.usage = cloneUsage(cumulativeUsage);
-		result.attempts = attempt;
-		if (attempt > 1) result.retries = attempt - 1;
-		if (retryReasons.length > 0) result.retryReasons = [...retryReasons];
-		delete result.retrying;
-
-		const retryReason = getRetryFailureReason(result);
-		if (!retryReason || attempt - 1 >= retryPolicy.maxRetries) return result;
-
-		retryReasons.push(retryReason);
-		if (onUpdate) {
-			onUpdate({
-				content: [
-					{
-						type: "text",
-						text: `Retrying ${agentName} after ${retryReason} (retry ${attempt}/${retryPolicy.maxRetries}, next attempt ${attempt + 1}/${retryPolicy.maxRetries + 1}) in ${retryPolicy.retryDelayMs}ms...`,
-					},
-				],
-				details: makeDetails([
-					{ ...result, retries: attempt - 1, retryReasons: [...retryReasons], retrying: true },
-				]),
-			});
-		}
-		await abortableSleep(retryPolicy.retryDelayMs, signal);
-	}
+	return runSingleAgentWithRetries({
+		agentName,
+		retryPolicy,
+		signal,
+		onUpdate,
+		makeDetails,
+		runAttempt: (attempt) =>
+			runSingleAgentAttempt(
+				defaultCwd,
+				agent,
+				agentName,
+				task,
+				cwd,
+				step,
+				attempt,
+				signal,
+				onUpdate,
+				makeDetails,
+			),
+	});
 }
 
 const TaskItem = Type.Object({
@@ -624,7 +509,19 @@ const SubagentParams = Type.Object({
 		}),
 	),
 	retryDelayMs: Type.Optional(
-		Type.Integer({ description: "Delay between retries in milliseconds. Default: 2000.", default: DEFAULT_RETRY_DELAY_MS, minimum: 0 }),
+		Type.Integer({
+			description:
+				"Base delay in milliseconds for exponential backoff between retries. Default: 2000. Doubles each retry, capped by maxRetryDelayMs.",
+			default: DEFAULT_RETRY_DELAY_MS,
+			minimum: 0,
+		}),
+	),
+	maxRetryDelayMs: Type.Optional(
+		Type.Integer({
+			description: "Maximum delay between retries with exponential backoff. Default: 30000. Set equal to retryDelayMs for fixed delay.",
+			default: DEFAULT_MAX_RETRY_DELAY_MS,
+			minimum: 0,
+		}),
 	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 });
@@ -636,7 +533,7 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Delegate tasks to specialized subagents with isolated context.",
 			"Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
-			"Retries subprocess/model errors by default; user aborts are not retried.",
+			"Retries subprocess/model errors by default with exponential backoff; user aborts are not retried.",
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
@@ -647,10 +544,11 @@ export default function (pi: ExtensionAPI) {
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
-			const retryPolicy: RetryPolicy = {
-				maxRetries: Math.max(0, Math.min(10, Math.floor(params.maxRetries ?? DEFAULT_MAX_RETRIES))),
-				retryDelayMs: Math.max(0, Math.floor(params.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS)),
-			};
+			const retryPolicy = buildRetryPolicy({
+				maxRetries: params.maxRetries,
+				retryDelayMs: params.retryDelayMs,
+				maxRetryDelayMs: params.maxRetryDelayMs,
+			});
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;

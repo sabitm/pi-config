@@ -1,0 +1,7 @@
+{
+	"name": "subagent",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Delegate tasks to specialized subagents with isolated context"
+}
