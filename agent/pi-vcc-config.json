@@ -1,8 +1,0 @@
-{
-  "overrideDefaultCompaction": false,
-  "smartKeepTail": true,
-  "continueAfterThresholdCompact": true,
-  "hybridSynthesis": true,
-  "summaryModel": null,
-  "debug": false
-}
