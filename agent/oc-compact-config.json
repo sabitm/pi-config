@@ -1,0 +1,23 @@
+{
+  "enabled": true,
+  "prune": true,
+  "pruneProtectTokens": 40000,
+  "pruneMinimumTokens": 20000,
+  "pruneTailTurns": 2,
+  "pruneProtectedTools": [
+    "skill"
+  ],
+  "tailTurns": 2,
+  "preserveRecentTokens": null,
+  "reserveTokens": 16384,
+  "toolOutputMaxChars": 2000,
+  "stripMedia": true,
+  "autoContinue": true,
+  "summaryMaxTokens": 4096,
+  "retry": {
+    "enabled": true,
+    "maxRetries": 3,
+    "baseDelayMs": 2000
+  },
+  "debug": false
+}

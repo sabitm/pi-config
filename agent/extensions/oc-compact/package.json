@@ -1,0 +1,7 @@
+{
+  "name": "oc-compact",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode-style anchored context compaction for pi"
+}
