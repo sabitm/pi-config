@@ -1,89 +1,99 @@
 ---
 name: senate
-description: Multi-agent planning. Chair plans first, subagent-1 and subagent-2 each plan independently on the same brief, chair merges. Use for senate mode, independent second opinions, or plan-then-subagents before implementation.
+description: User-invoked multi-agent deliberation for decisions, analysis, reviews, investigations, debugging, design, and planning. Use only when the user explicitly asks to summon or use the senate, requests senate mode, or invokes /skill:senate. Never invoke autonomously based on task complexity or perceived benefit.
 ---
 
 # Senate
 
-Three voices, one plan. Code only after user approval.
+Three independent positions, one adjudicated result. Deliberation precedes execution.
+
+## Activation
+
+Run only when the user explicitly asks to summons the senate for the current task, including `/skill:senate`. Never infer permission from complexity, perceived benefit, or prior use; each new task requires a fresh summons.
 
 ## Roles
 
-| Role | Who | Duty |
-|------|-----|------|
-| Chair | You | Research, draft first, identical brief, judge, merge, gate on approval |
-| A/B | `subagent-1`, `subagent-2` | Full independent plans only. No code. No cross-talk |
+| Role | Duty |
+|------|------|
+| Chair | Clarify, research, draft independently, issue a neutral brief, adjudicate, synthesize |
+| Senators | Analyze the same brief independently; expose evidence, assumptions, risks, and recommendations |
+
+Use `subagent-1` and `subagent-2` as senators.
 
 ## Rules
 
-1. Chair plans **before** calling subagents.
-2. Both get the **same** brief — no chair plan, no split hints.
-3. Senators: plan only (`Do NOT write code`).
-4. Merge with a judgment table; pick the better argument, not authorship.
-5. **No code until the user approves** the merged plan (project AGENTS.md still applies).
-6. New user task = new senate cycle.
+1. Clarify ambiguous objectives, constraints, and expected output first.
+2. Chair records an independent draft before dispatching senators.
+3. Senators receive the same brief without the chair draft, preferred conclusions, or each other's work.
+4. Deliberation is read-only: senators may inspect and discuss code, but must not modify state or cause external side effects.
+5. Separate facts, assumptions, inferences, and recommendations.
+6. Judge by correctness, evidence, coverage, feasibility, risk, simplicity, constraint compliance, and verifiability.
+7. Synthesize on merit, not authorship. Preserve material dissent or uncertainty; do not force consensus.
+8. Execution is a separate phase governed by user authorization and project rules. A new task starts a new senate cycle.
 
 ## Flow
 
-1. **Clarify** if the goal is fuzzy.
-2. **Chair research + draft** (scope, seams, files, tests, risks, non-goals).
-3. **Dispatch in parallel** (`agentScope: "user"`):
+1. Classify the task and define success criteria.
+2. Chair researches and drafts an initial position.
+3. Send both senators the identical neutral brief in parallel with `agentScope: "user"`.
+4. Compare all positions topic by topic: consensus, Chair, Sub-1, Sub-2, hybrid, or unresolved.
+5. Produce one cohesive result suited to the requested task.
+6. If action would modify state, stop at the execution proposal unless already authorized.
 
-```
-tasks: [
-  { agent: "subagent-1", task: "<identical brief>" },
-  { agent: "subagent-2", task: "<identical brief>" }
-]
-```
-*(If a subagent fails/errors, proceed with remaining inputs and flag in report.)*
+If one senator fails, continue and disclose it. If both fail, return the chair result and state that independent review was unavailable.
 
-4. **Judge** — evaluate Chair Draft vs Sub-1 vs Sub-2 on merits (agree / pick 1 / pick 2 / hybrid / chair override).
-5. **Merge** into one cohesive plan; list defaults if user says "as written".
-6. **Ask approval.** Implement only after explicit 'yes'; re-plan if implementation breaks a decision.
+## Senator brief
 
-## Brief (identical to both)
+```text
+Analyze this task independently. Do not modify files or cause external side effects.
+Read-only research is allowed.
 
-```
-Plan only for <REPO>. Do NOT write code. Research independently.
+Task type: <decision | investigation | review | diagnosis | design | planning | other>
+Objective: <desired outcome or question>
+Success criteria: <what the result must establish>
+Constraints: <user, project, policy, tool, and time constraints>
+Must-read: <paths or sources>
+Known facts: <neutral context without a preferred conclusion>
+Required output: <task-specific deliverable>
 
-Task: <goal>
-Constraints: <AGENTS.md + user rules>
-Must-read: <paths>
-Background (facts only, no preferred design): <neutral context>
+Distinguish facts, assumptions, inferences, and recommendations. Include:
+- findings and supporting evidence
+- options or competing explanations
+- recommendation and rationale
+- risks, counterarguments, and uncertainty
+- verification or next steps
 
-Deliverable:
-1. Scope (in/out)
-2. Model/API changes
-3. Layout + imports
-4. Core seams/flows
-5. UI (if any)
-6. Ordered file list
-7. Tests
-8. Risks / questions
-9. Non-goals
-
-Be concrete (types, signatures, failure modes). Return only the plan.
+Return only the independent analysis.
 ```
 
-## Output to user
+## Output
 
-```
+```markdown
 # Senate: <title>
 
+## Objective
+<question, constraints, and success criteria>
+
 ## Judgment
-| Topic | Chair Draft | Sub-1 | Sub-2 | Pick | Rationale |
-|-------|-------------|-------|-------|------|-----------|
-| ...   | ...         | ...   | ...   | ...  | ...       |
+| Topic | Chair | Sub-1 | Sub-2 | Resolution | Rationale |
+|-------|-------|-------|-------|------------|-----------|
+| ...   | ...   | ...   | ...   | ...        | ...       |
 
-## Merged plan
-<full plan + defaults for "as written">
+## Synthesized result
+<decision, analysis, review, diagnosis, design, or plan>
 
-Approve, amend, or re-run narrower. No code until approved.
+## Dissent and uncertainty
+<material disagreements, unknowns, and confidence limits>
+
+## Next action
+<verification, authorized execution, proposed execution, or none>
 ```
 
 ## Don't
 
-- Subagents before chair draft
-- Different briefs or leaking plans between senators
-- Rubber-stamp merge or pre-approval "setup" code
-- Endless re-runs without user direction
+- Dispatch senators before the chair draft
+- Use different briefs or leak positions between participants
+- Confuse confidence with evidence or majority with correctness
+- Hide unresolved disagreement
+- Perform side effects during deliberation
+- Re-run without user direction or materially new evidence
