@@ -1,7 +1,7 @@
 {
   "providers": {
     "airouter": {
-      "baseUrl": "http://localhost:8080/v1",
+      "baseUrl": "http://localhost:31415/v1",
       "api": "openai-completions",
       "apiKey": "airouter",
       "models": [
