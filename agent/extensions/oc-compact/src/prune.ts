@@ -13,24 +13,27 @@ const contentTextOf = (content: unknown): string => {
 const isProtectedTool = (toolName: unknown, protectedTools: string[]): boolean =>
   typeof toolName === "string" && protectedTools.includes(toolName);
 
-/**
- * Ephemeral OpenCode-style tool-output prune for the live LLM context.
- * Does not mutate the session JSONL (invariant).
- */
-export function pruneToolResults(
-  messages: any[],
-  config: Pick<
-    OcCompactConfig,
-    "prune" | "pruneProtectTokens" | "pruneMinimumTokens" | "pruneTailTurns" | "pruneProtectedTools"
-  >,
-): { messages: any[]; prunedCount: number; prunedTokensEst: number } {
-  if (!config.prune || messages.length === 0) {
-    return { messages, prunedCount: 0, prunedTokensEst: 0 };
-  }
+export type PruneConfig = Pick<
+  OcCompactConfig,
+  "prune" | "pruneProtectTokens" | "pruneMinimumTokens" | "pruneTailTurns" | "pruneProtectedTools"
+>;
 
-  let total = 0;
-  let prunedTokens = 0;
-  const toPrune: number[] = [];
+export interface PruneCandidate {
+  index: number;
+  tokens: number;
+  /** User-turn distance from the end (0 = newest user turn's tools). */
+  turnsFromEnd: number;
+}
+
+/**
+ * Eligible successful tool-result outputs, newest-first.
+ * Errors, protected tools, markers, and pre-compaction history are excluded.
+ */
+export function collectPruneCandidates(
+  messages: any[],
+  protectedTools: string[],
+): PruneCandidate[] {
+  const candidates: PruneCandidate[] = [];
   let turns = 0;
 
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -41,27 +44,102 @@ export function pruneToolResults(
       turns += 1;
       continue;
     }
-    // Protect recent turns (OpenCode: turns < 2).
-    if (turns < config.pruneTailTurns) continue;
-
-    // Stop at previous compaction boundary.
     if (msg.role === "compactionSummary") break;
-
     if (msg.role !== "toolResult") continue;
     if (msg.isError) continue;
-    if (isProtectedTool(msg.toolName, config.pruneProtectedTools)) continue;
+    if (isProtectedTool(msg.toolName, protectedTools)) continue;
 
     const text = contentTextOf(msg.content);
     if (isPruneMarker(text)) continue;
 
-    const est = estimateTokens(msg);
-    total += est;
-    if (total <= config.pruneProtectTokens) continue;
-    prunedTokens += est;
-    toPrune.push(i);
+    candidates.push({
+      index: i,
+      tokens: estimateTokens(msg),
+      turnsFromEnd: turns,
+    });
   }
 
-  if (prunedTokens <= config.pruneMinimumTokens || toPrune.length === 0) {
+  return candidates;
+}
+
+/**
+ * Choose prune indices under a global newest-protect budget.
+ * pruneTailTurns is a soft preference: recent-turn outputs claim the protect
+ * budget first (already true via newest-first walk), but never an unlimited skip.
+ */
+export function selectPruneIndices(
+  candidatesNewestFirst: PruneCandidate[],
+  protectTokens: number,
+  minimumTokens: number,
+  pruneTailTurns: number,
+): { toPrune: number[]; prunedTokensEst: number } {
+  let protectedBudgetUsed = 0;
+  const toPrune: number[] = [];
+  let prunedTokensEst = 0;
+
+  // Allocate the finite protection budget to configured recent turns first.
+  const ordered = [
+    ...candidatesNewestFirst.filter((c) => c.turnsFromEnd < pruneTailTurns),
+    ...candidatesNewestFirst.filter((c) => c.turnsFromEnd >= pruneTailTurns),
+  ];
+
+  for (const c of ordered) {
+    if (protectedBudgetUsed < protectTokens) {
+      // Tool results are atomic, so the result crossing the boundary is protected in full.
+      protectedBudgetUsed += c.tokens;
+      continue;
+    }
+    toPrune.push(c.index);
+    prunedTokensEst += c.tokens;
+  }
+
+  if (prunedTokensEst <= minimumTokens || toPrune.length === 0) {
+    return { toPrune: [], prunedTokensEst: 0 };
+  }
+  return { toPrune, prunedTokensEst };
+}
+
+/**
+ * Estimate how many tool-result tokens prune would free on these messages.
+ * Used when host context usage still reflects unpruned persisted content.
+ */
+export function estimatePruneSavings(messages: any[], config: PruneConfig): number {
+  if (!config.prune || messages.length === 0) return 0;
+  const candidates = collectPruneCandidates(messages, config.pruneProtectedTools);
+  const { prunedTokensEst } = selectPruneIndices(
+    candidates,
+    config.pruneProtectTokens,
+    config.pruneMinimumTokens,
+    config.pruneTailTurns,
+  );
+  return prunedTokensEst;
+}
+
+/**
+ * Ephemeral OpenCode-style tool-output prune for the live LLM context.
+ * Does not mutate the session JSONL (invariant).
+ *
+ * Protects the newest pruneProtectTokens of eligible successful tool output
+ * globally (including inside a single huge user turn). Older eligible output
+ * may be pruned even when pruneTailTurns would have exempted the whole turn.
+ */
+export function pruneToolResults(
+  messages: any[],
+  config: PruneConfig,
+): { messages: any[]; prunedCount: number; prunedTokensEst: number } {
+  if (!config.prune || messages.length === 0) {
+    return { messages, prunedCount: 0, prunedTokensEst: 0 };
+  }
+
+  const candidates = collectPruneCandidates(messages, config.pruneProtectedTools);
+  const { toPrune, prunedTokensEst } = selectPruneIndices(
+    candidates,
+    config.pruneProtectTokens,
+    config.pruneMinimumTokens,
+    config.pruneTailTurns,
+  );
+
+  if (toPrune.length === 0) {
     return { messages, prunedCount: 0, prunedTokensEst: 0 };
   }
 
@@ -77,7 +155,7 @@ export function pruneToolResults(
   return {
     messages: next,
     prunedCount: toPrune.length,
-    prunedTokensEst: prunedTokens,
+    prunedTokensEst,
   };
 }
 

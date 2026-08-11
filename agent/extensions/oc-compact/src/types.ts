@@ -20,8 +20,14 @@ export interface OcCompactConfig {
   reserveTokens: number;
   toolOutputMaxChars: number;
   stripMedia: boolean;
+  /**
+   * When true, resume only after extension-initiated proactive mid-task compaction.
+   * Final host threshold/overflow completions never auto-continue.
+   */
   autoContinue: boolean;
   summaryMaxTokens: number;
+  /** Soft cap on retained-suffix serialization chars fed to the summary model. */
+  retainedSuffixMaxChars: number;
   retry: OcCompactRetry;
   debug: boolean;
 }
@@ -52,6 +58,8 @@ export interface SelectionOk {
   firstKeptEntryId: string;
   tailStartIndex: number;
   headMessages: any[];
+  /** Messages kept verbatim after the cut (for summary reconciliation). */
+  tailMessages: any[];
   splitTurn: boolean;
   keptTurns: number;
   preservedRecentTokens: number;

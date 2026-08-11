@@ -13,9 +13,11 @@ export class SummarizationError extends Error {
 
 export const SUMMARIZATION_SYSTEM_PROMPT = `You are an anchored context summarization assistant for coding sessions.
 
-Summarize only the conversation history you are given. The newest turns may be kept verbatim outside your summary, so focus on the older context that still matters for continuing the work.
+Summarize only the discarded conversation history you are given. The newest turns may be kept verbatim outside your summary.
 
 If the prompt includes a <previous-summary> block, treat it as the current anchored summary. Update it with the new history by preserving still-true details, removing stale details, and merging in new facts.
+
+If the prompt includes a <retained-suffix> block, use it only to reconcile the latest work state and completion status. Do not duplicate large retained details into the summary.
 
 Always follow the exact output structure requested by the user prompt. Keep every section, preserve exact file paths and identifiers when known, and prefer terse bullets over paragraphs.
 
@@ -51,19 +53,37 @@ Rules:
 - Keep every section, even when empty.
 - Use terse bullets, not prose paragraphs.
 - Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known.
+- Summarize the discarded head only; use <retained-suffix> solely to determine the latest work state.
+- Do not claim work is Active, Blocked, or needs a Next Move if the retained suffix shows it was completed or resolved.
+- When the retained suffix shows the task completed, set Active, Blocked, and Next Move to "(none)".
+- Do not duplicate large retained details already present in the suffix.
 - Do not mention the summary process or that context was compacted.`;
+
+/** Bound retained-suffix body so the summary prompt stays finite. */
+export const boundRetainedSuffixText = (text: string, maxChars: number): string => {
+  if (maxChars <= 0 || text.length <= maxChars) return text;
+  // Keep the end: completion evidence is usually in the newest retained messages.
+  const slice = text.slice(-maxChars);
+  return `[retained suffix truncated]\n${slice}`;
+};
 
 export const buildSummaryPrompt = (input: {
   previousSummary?: string;
   customInstructions?: string;
+  retainedSuffixText?: string;
 }): string => {
   const parts: string[] = [];
   if (input.previousSummary) {
     parts.push(
-      `Update the anchored summary below using the conversation history above.\nPreserve still-true details, remove stale details, and merge in the new facts.\n<previous-summary>\n${input.previousSummary}\n</previous-summary>`,
+      `Update the anchored summary below using the discarded conversation history above.\nPreserve still-true details, remove stale details, and merge in the new facts.\n<previous-summary>\n${input.previousSummary}\n</previous-summary>`,
     );
   } else {
-    parts.push("Create a new anchored summary from the conversation history.");
+    parts.push("Create a new anchored summary from the discarded conversation history above.");
+  }
+  if (input.retainedSuffixText?.trim()) {
+    parts.push(
+      `The following retained suffix stays verbatim in the live context after compaction.\nInspect it only to reconcile completion and current state. Do not copy large retained details into the summary.\n<retained-suffix>\n${input.retainedSuffixText.trim()}\n</retained-suffix>`,
+    );
   }
   parts.push(SUMMARY_TEMPLATE);
   if (input.customInstructions?.trim()) {
@@ -71,6 +91,25 @@ export const buildSummaryPrompt = (input: {
   }
   return parts.join("\n\n");
 };
+
+/**
+ * Prepare a bounded retained-suffix transcript for reconciliation.
+ * Uses the same truncation/media prep as head messages.
+ */
+export function prepareRetainedSuffixText(
+  tailMessages: any[] | undefined,
+  config: Pick<OcCompactConfig, "toolOutputMaxChars" | "stripMedia" | "retainedSuffixMaxChars">,
+): { text: string; mediaStripped: number } {
+  if (!tailMessages || tailMessages.length === 0) {
+    return { text: "", mediaStripped: 0 };
+  }
+  const prepared = prepareHeadMessages(tailMessages, config);
+  const serialized = serializeHead(prepared.messages);
+  return {
+    text: boundRetainedSuffixText(serialized, config.retainedSuffixMaxChars),
+    mediaStripped: prepared.mediaStripped,
+  };
+}
 
 const extractText = (content: unknown): string => {
   if (!Array.isArray(content)) return "";
@@ -89,6 +128,8 @@ const isAbortError = (err: unknown): boolean => {
 
 export interface SummarizeInput {
   headMessages: any[];
+  /** Retained tail messages kept verbatim after the cut (reconciliation only). */
+  tailMessages?: any[];
   previousSummary?: string;
   customInstructions?: string;
   model: any;
@@ -97,7 +138,10 @@ export interface SummarizeInput {
   env?: Record<string, string>;
   signal?: AbortSignal;
   config: OcCompactConfig;
-  /** Prefer multi-turn head + prompt; set false to force serialized single-user blob. */
+  /**
+   * Default false: serialize discarded head into a tagged transcript.
+   * Set true only for multi-turn live replay compatibility.
+   */
   multiTurn?: boolean;
 }
 
@@ -107,10 +151,11 @@ export interface SummarizeResult {
   mediaStripped: number;
   promptChars: number;
   mode: "multi-turn" | "serialized";
+  retainedSuffixChars: number;
 }
 
 /**
- * LLM anchored summary over HEAD only.
+ * LLM anchored summary over HEAD, with optional retained-suffix reconciliation.
  * Throws SummarizationError on failure (caller cancels; never falls through to stock).
  */
 export async function summarizeHead(input: SummarizeInput): Promise<SummarizeResult> {
@@ -119,12 +164,15 @@ export async function summarizeHead(input: SummarizeInput): Promise<SummarizeRes
   if (!input.apiKey) throw new SummarizationError("No API key available for session model");
 
   const prepared = prepareHeadMessages(input.headMessages, config);
+  const retained = prepareRetainedSuffixText(input.tailMessages, config);
   const promptText = buildSummaryPrompt({
     previousSummary: input.previousSummary,
     customInstructions: input.customInstructions,
+    retainedSuffixText: retained.text || undefined,
   });
 
-  const multiTurn = input.multiTurn !== false;
+  // Production path serializes head; multiTurn is opt-in compatibility only.
+  const multiTurn = input.multiTurn === true;
   let messages: any[];
   let mode: "multi-turn" | "serialized";
   let promptChars = promptText.length;
@@ -204,9 +252,10 @@ export async function summarizeHead(input: SummarizeInput): Promise<SummarizeRes
     return {
       text,
       usage: response.usage,
-      mediaStripped: prepared.mediaStripped,
+      mediaStripped: prepared.mediaStripped + retained.mediaStripped,
       promptChars,
       mode,
+      retainedSuffixChars: retained.text.length,
     };
   } catch (err) {
     if (isAbortError(err)) throw err;

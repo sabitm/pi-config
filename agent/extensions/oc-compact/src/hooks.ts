@@ -1,8 +1,18 @@
 import { writeFileSync } from "fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import { estimateTokens, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./config";
-import { pruneToolResults, stripOverflowMedia } from "./prune";
+import { estimatePruneSavings, pruneToolResults, stripOverflowMedia } from "./prune";
+import {
+  consumeProactiveResume,
+  estimateTokensAfterPrune,
+  initialProactiveState,
+  isWorkContinuing,
+  reduceProactiveState,
+  shouldScheduleAutoContinue,
+  shouldTriggerProactiveCompact,
+  type ProactiveState,
+} from "./proactive";
 import { selectTail } from "./select";
 import { summarizeHead, SummarizationError } from "./summarize";
 import type { CompactionReason, OcCompactDetails, OcCompactStats } from "./types";
@@ -13,21 +23,24 @@ import type { CompactionReason, OcCompactDetails, OcCompactStats } from "./types
 const AUTO_CONTINUE_CUSTOM_TYPE = "oc-compact-auto-continue";
 const AUTO_CONTINUE_PROMPT =
   "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.";
-const AUTO_CONTINUE_OVERFLOW_PROMPT =
-  "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n" +
-  AUTO_CONTINUE_PROMPT;
 
 let lastStats: OcCompactStats | null = null;
 let pendingOverflowStrip = false;
 let pendingAutoContinueTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingAutoContinueReason: CompactionReason | null = null;
+let proactiveState: ProactiveState = initialProactiveState();
 
 const clearPendingAutoContinue = () => {
   if (pendingAutoContinueTimer) {
     clearTimeout(pendingAutoContinueTimer);
     pendingAutoContinueTimer = null;
   }
-  pendingAutoContinueReason = null;
+};
+
+const resetSessionState = () => {
+  clearPendingAutoContinue();
+  proactiveState = initialProactiveState();
+  lastStats = null;
+  pendingOverflowStrip = false;
 };
 
 const formatTokens = (n: number): string =>
@@ -76,19 +89,15 @@ const scheduleStatsNotify = (ctx: any, stats: OcCompactStats) => {
   setTimeout(() => notify(ctx, formatCompactionStats(stats), "info"), 500);
 };
 
-const scheduleAutoContinue = (pi: ExtensionAPI, reason: CompactionReason) => {
+const scheduleAutoContinue = (pi: ExtensionAPI) => {
   clearPendingAutoContinue();
-  pendingAutoContinueReason = reason;
   pendingAutoContinueTimer = setTimeout(async () => {
     pendingAutoContinueTimer = null;
-    const r = pendingAutoContinueReason;
-    pendingAutoContinueReason = null;
-    const content = r === "overflow" ? AUTO_CONTINUE_OVERFLOW_PROMPT : AUTO_CONTINUE_PROMPT;
     try {
       await pi.sendMessage(
         {
           customType: AUTO_CONTINUE_CUSTOM_TYPE,
-          content,
+          content: AUTO_CONTINUE_PROMPT,
           display: false,
         },
         { triggerTurn: true },
@@ -125,7 +134,64 @@ const resolveAuth = async (ctx: any, model: any) => {
   }
 };
 
+/** Collect LLM-facing messages from the active branch (for prune savings estimate). */
+const branchMessages = (ctx: any): any[] => {
+  try {
+    const entries = ctx?.sessionManager?.getBranch?.() ?? [];
+    const messages: any[] = [];
+    for (const entry of entries) {
+      try {
+        const ms = sessionEntryToContextMessages(entry) ?? [];
+        for (const m of ms) messages.push(m);
+      } catch {
+        if (entry?.type === "message" && entry.message) messages.push(entry.message);
+      }
+    }
+    return messages;
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Start extension-owned proactive compact.
+ * ctx.compact aborts the current agent run (fire-and-forget), then reports reason=manual.
+ * turn_end handlers are awaited before the next provider request, so this runs before the next LLM call.
+ */
+const requestProactiveCompact = (pi: ExtensionAPI, ctx: any) => {
+  proactiveState = reduceProactiveState(proactiveState, { type: "request" });
+  if (proactiveState.phase !== "pending") return;
+
+  proactiveState = reduceProactiveState(proactiveState, { type: "started" });
+  notify(ctx, "oc-compact: proactive mid-task compaction...", "info");
+
+  try {
+    ctx.compact({
+      customInstructions:
+        "Mid-task compaction: preserve active work state, open questions, and concrete next steps.",
+      onComplete: () => {
+        const { next, shouldResume } = consumeProactiveResume(proactiveState);
+        proactiveState = next;
+        if (shouldResume) scheduleAutoContinue(pi);
+      },
+      onError: () => {
+        proactiveState = reduceProactiveState(proactiveState, { type: "failure" });
+      },
+    });
+  } catch {
+    proactiveState = reduceProactiveState(proactiveState, { type: "failure" });
+  }
+};
+
 export const registerOcCompactHooks = (pi: ExtensionAPI) => {
+  pi.on("session_start", () => {
+    resetSessionState();
+  });
+
+  pi.on("session_shutdown", () => {
+    resetSessionState();
+  });
+
   pi.on("before_agent_start", () => {
     clearPendingAutoContinue();
   });
@@ -157,6 +223,54 @@ export const registerOcCompactHooks = (pi: ExtensionAPI) => {
 
     if (!changed) return;
     return { messages };
+  });
+
+  // Mid-task: after a tool batch, compact before the next provider request when near threshold.
+  pi.on("turn_end", (event, ctx) => {
+    const config = loadConfig();
+    if (!config.enabled || !config.autoContinue) return;
+
+    const workContinuing = isWorkContinuing(event.message, event.toolResults);
+    if (!workContinuing) return;
+
+    const usage = (() => {
+      try {
+        return ctx.getContextUsage?.();
+      } catch {
+        return undefined;
+      }
+    })();
+    const contextWindow =
+      (usage && typeof usage.contextWindow === "number" && usage.contextWindow > 0
+        ? usage.contextWindow
+        : resolveContextWindow(ctx, config.reserveTokens)) ?? 0;
+
+    const messages = branchMessages(ctx);
+    const pruneSavings = estimatePruneSavings(messages, config);
+    const tokensAfterPrune = estimateTokensAfterPrune(usage?.tokens ?? null, pruneSavings);
+
+    const trigger = shouldTriggerProactiveCompact({
+      workContinuing,
+      tokensAfterPrune,
+      contextWindow,
+      reserveTokens: config.reserveTokens,
+      alreadyPending: proactiveState.phase !== "idle",
+      enabled: config.enabled,
+    });
+
+    dbg(config.debug, {
+      turn_end: true,
+      workContinuing,
+      usageTokens: usage?.tokens ?? null,
+      pruneSavings,
+      tokensAfterPrune,
+      contextWindow,
+      trigger,
+      proactivePhase: proactiveState.phase,
+    });
+
+    if (!trigger) return;
+    requestProactiveCompact(pi, ctx);
   });
 
   pi.on("session_before_compact", async (event, ctx) => {
@@ -205,6 +319,7 @@ export const registerOcCompactHooks = (pi: ExtensionAPI) => {
 
       const summaryResult = await summarizeHead({
         headMessages: selection.headMessages,
+        tailMessages: selection.tailMessages,
         previousSummary: preparation.previousSummary,
         customInstructions,
         model,
@@ -251,13 +366,16 @@ export const registerOcCompactHooks = (pi: ExtensionAPI) => {
         willRetry,
         firstKeptEntryId: selection.firstKeptEntryId,
         headMessages: selection.headMessages.length,
+        tailMessages: selection.tailMessages.length,
         keptTurns: selection.keptTurns,
         splitTurn: selection.splitTurn,
         promptChars: summaryResult.promptChars,
+        retainedSuffixChars: summaryResult.retainedSuffixChars,
         summaryLength: summaryResult.text.length,
         summaryPreview: summaryResult.text.slice(0, 500),
         previousSummaryUsed: Boolean(preparation.previousSummary),
         tokensBefore: preparation.tokensBefore,
+        proactivePhase: proactiveState.phase,
       });
 
       return {
@@ -295,19 +413,34 @@ export const registerOcCompactHooks = (pi: ExtensionAPI) => {
   });
 
   pi.on("session_compact", async (event, ctx) => {
-    if (!event.fromExtension) return;
-    const { reason, willRetry } = readCompactionEventContext(event);
-    if (willRetry) return;
+    if (!event.fromExtension) {
+      // Host stock path: clear any stale proactive tracking.
+      proactiveState = reduceProactiveState(proactiveState, { type: "clear" });
+      return;
+    }
 
+    const { reason, willRetry } = readCompactionEventContext(event);
     const config = loadConfig();
     const stats = lastStats;
     if (stats) scheduleStatsNotify(ctx, stats);
 
-    const shouldContinue =
-      config.autoContinue &&
-      (reason === "threshold" || reason === "overflow");
-    if (shouldContinue) {
-      scheduleAutoContinue(pi, reason ?? "threshold");
+    const tracked = proactiveState.phase !== "idle" && proactiveState.resumeOnSuccess;
+    const belongsToProactiveCompact = shouldScheduleAutoContinue({
+      autoContinue: config.autoContinue,
+      reason,
+      willRetry,
+      isTrackedProactive: tracked,
+    });
+
+    if (belongsToProactiveCompact) {
+      // ctx.compact invokes onComplete only after the host clears manual-compaction state.
+      return;
     }
+
+    // Settled without proactive resume (final threshold/overflow/manual user compact, or willRetry).
+    proactiveState = reduceProactiveState(proactiveState, { type: "clear" });
   });
 };
+
+/** Test seam: reset module-level session tracking. */
+export const __resetProactiveStateForTests = resetSessionState;

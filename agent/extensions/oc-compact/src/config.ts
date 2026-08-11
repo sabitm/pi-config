@@ -27,6 +27,7 @@ export const DEFAULT_CONFIG: OcCompactConfig = {
   stripMedia: true,
   autoContinue: true,
   summaryMaxTokens: 4096,
+  retainedSuffixMaxChars: 24_000,
   retry: { ...DEFAULT_RETRY },
   debug: false,
 };
@@ -84,6 +85,10 @@ export function loadConfig(): OcCompactConfig {
     stripMedia: asBool(parsed.stripMedia, DEFAULT_CONFIG.stripMedia),
     autoContinue: asBool(parsed.autoContinue, DEFAULT_CONFIG.autoContinue),
     summaryMaxTokens: Math.max(256, Math.floor(asNumber(parsed.summaryMaxTokens, DEFAULT_CONFIG.summaryMaxTokens))),
+    retainedSuffixMaxChars: Math.max(
+      0,
+      Math.floor(asNumber(parsed.retainedSuffixMaxChars, DEFAULT_CONFIG.retainedSuffixMaxChars)),
+    ),
     retry: parseRetry(parsed.retry),
     debug: asBool(parsed.debug, DEFAULT_CONFIG.debug),
   };

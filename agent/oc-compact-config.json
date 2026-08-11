@@ -14,6 +14,7 @@
   "stripMedia": true,
   "autoContinue": true,
   "summaryMaxTokens": 4096,
+  "retainedSuffixMaxChars": 24000,
   "retry": {
     "enabled": true,
     "maxRetries": 3,

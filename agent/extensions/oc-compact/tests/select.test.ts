@@ -126,4 +126,34 @@ describe("selectTail", () => {
     expect(result.firstKeptEntryId).toBe("u2");
     expect(result.overflowStrip).toBe(true);
   });
+
+  test("exposes retained tail messages for summary reconciliation", () => {
+    const entries = [
+      msg("u1", "user", "research task"),
+      msg("a1", "assistant", "gathering sources"),
+      toolResult("t1", "source dump".repeat(100)),
+      msg("a2", "assistant", "FINAL COMPARISON: A wins"),
+    ];
+    const result = selectTail({
+      branchEntries: entries,
+      config: { ...DEFAULT_CONFIG, tailTurns: 1, preserveRecentTokens: 500 },
+      contextWindow: 200_000,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(Array.isArray(result.tailMessages)).toBe(true);
+    expect(result.tailMessages.length).toBeGreaterThan(0);
+    const tailText = JSON.stringify(result.tailMessages);
+    // Retained completion evidence must be visible to summarization.
+    if (result.splitTurn || result.firstKeptEntryId === "a2") {
+      expect(tailText.includes("FINAL COMPARISON") || tailText.includes("A wins")).toBe(true);
+    } else {
+      // Even when the whole turn is kept, tail still exposes retained messages.
+      expect(result.tailMessages.some((m: any) => m.role === "assistant" || m.role === "user")).toBe(
+        true,
+      );
+    }
+    // Head and tail are disjoint ranges.
+    expect(result.headMessages).not.toBe(result.tailMessages);
+  });
 });

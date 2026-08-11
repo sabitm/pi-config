@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { pruneToolResults, stripOverflowMedia } from "../src/prune";
+import {
+  collectPruneCandidates,
+  pruneToolResults,
+  selectPruneIndices,
+  stripOverflowMedia,
+} from "../src/prune";
 import { PRUNE_MARKER } from "../src/serialize";
 import { DEFAULT_CONFIG } from "../src/config";
 
@@ -24,7 +29,7 @@ describe("pruneToolResults", () => {
     expect(out.messages).toBe(messages);
   });
 
-  test("protects recent turns and protected tools", () => {
+  test("protects recent turns preferentially and protected tools", () => {
     // Structure: older tool outs, then 2 recent user turns.
     // chars/4 heuristic: 200_000 chars ≈ 50k tokens each.
     const messages = [
@@ -45,10 +50,9 @@ describe("pruneToolResults", () => {
       pruneTailTurns: 2,
       pruneProtectedTools: ["skill"],
     });
-    // Recent 2 user turns' tools should stay; skill protected; older bash may prune.
     const skill = out.messages.find((m: any) => m.toolName === "skill");
     expect(skill.content[0].text.includes(PRUNE_MARKER)).toBe(false);
-    // At least one older bash pruned if thresholds met
+    // Newest tools (new1/new2, ~12.5k each) stay under 40k protect; older may prune.
     if (out.prunedCount > 0) {
       const pruned = out.messages.filter(
         (m: any) =>
@@ -58,7 +62,41 @@ describe("pruneToolResults", () => {
       );
       expect(pruned.length).toBe(out.prunedCount);
       expect(pruned.every((m: any) => m.toolName !== "skill")).toBe(true);
+      // Recent-turn tools should remain unpruned when protect budget covers them.
+      const lastBash = out.messages[out.messages.length - 1];
+      expect(lastBash.content[0].text.includes(PRUNE_MARKER)).toBe(false);
     }
+  });
+
+  test("prunes older outputs inside a single huge user turn", () => {
+    // One user prompt, many large tool results — previously never pruned
+    // because pruneTailTurns skipped the whole turn without a token bound.
+    // ~25k tokens each; protect 40k keeps the two newest atomic results, then prunes older.
+    const messages: any[] = [{ role: "user", content: "research" }];
+    for (let i = 0; i < 8; i++) {
+      messages.push({
+        role: "assistant",
+        content: [{ type: "toolCall", name: "bash", arguments: { i } }],
+      });
+      messages.push(bigTool("bash", 100_000));
+    }
+    const out = pruneToolResults(messages, {
+      ...DEFAULT_CONFIG,
+      pruneProtectTokens: 40_000,
+      pruneMinimumTokens: 20_000,
+      pruneTailTurns: 2,
+    });
+    expect(out.prunedCount).toBeGreaterThan(0);
+    expect(out.prunedTokensEst).toBeGreaterThan(20_000);
+    const toolResults = out.messages.filter((m: any) => m.role === "toolResult");
+    // Newest eligible results cross the finite protection boundary atomically and remain.
+    const newest = toolResults[toolResults.length - 1];
+    const secondNewest = toolResults[toolResults.length - 2];
+    expect(newest.content[0].text.includes(PRUNE_MARKER)).toBe(false);
+    expect(secondNewest.content[0].text.includes(PRUNE_MARKER)).toBe(false);
+    // Oldest eligible results are pruned despite being in the same user turn.
+    const oldest = toolResults[0];
+    expect(oldest.content[0].text.includes(PRUNE_MARKER)).toBe(true);
   });
 
   test("skips error tool results", () => {
@@ -94,14 +132,56 @@ describe("pruneToolResults", () => {
       },
       { role: "user", content: "b" },
       { role: "user", content: "c" },
+      bigTool("bash", 200_000),
     ];
-    const out = pruneToolResults(messages, {
+    const first = pruneToolResults(messages, {
       ...DEFAULT_CONFIG,
       pruneProtectTokens: 0,
       pruneMinimumTokens: 0,
       pruneTailTurns: 0,
     });
-    expect(out.prunedCount).toBe(0);
+    expect(first.prunedCount).toBe(1);
+    const second = pruneToolResults(first.messages, {
+      ...DEFAULT_CONFIG,
+      pruneProtectTokens: 0,
+      pruneMinimumTokens: 0,
+      pruneTailTurns: 0,
+    });
+    expect(second.prunedCount).toBe(0);
+  });
+
+  test("selectPruneIndices allocates protection to recent turns before older turns", () => {
+    const candidates = [
+      { index: 5, tokens: 10_000, turnsFromEnd: 0 },
+      { index: 4, tokens: 10_000, turnsFromEnd: 3 },
+      { index: 3, tokens: 10_000, turnsFromEnd: 0 },
+      { index: 2, tokens: 30_000, turnsFromEnd: 1 },
+    ];
+    const { toPrune, prunedTokensEst } = selectPruneIndices(candidates, 25_000, 5_000, 2);
+    expect(toPrune).toEqual([4]);
+    expect(prunedTokensEst).toBe(10_000);
+  });
+
+  test("collectPruneCandidates skips protected and errors", () => {
+    const messages = [
+      { role: "user", content: "u" },
+      bigTool("bash", 4_000),
+      {
+        role: "toolResult",
+        toolName: "skill",
+        content: [{ type: "text", text: "s".repeat(4_000) }],
+        isError: false,
+      },
+      {
+        role: "toolResult",
+        toolName: "bash",
+        isError: true,
+        content: [{ type: "text", text: "e".repeat(4_000) }],
+      },
+    ];
+    const c = collectPruneCandidates(messages, ["skill"]);
+    expect(c.length).toBe(1);
+    expect(c[0].index).toBe(1);
   });
 });
 

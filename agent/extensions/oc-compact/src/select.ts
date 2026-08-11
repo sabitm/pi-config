@@ -133,9 +133,9 @@ const splitTurn = (
   return undefined;
 };
 
-const collectHeadMessages = (entries: any[], boundaryStart: number, tailStart: number): any[] => {
+const collectMessages = (entries: any[], start: number, end: number): any[] => {
   const messages: any[] = [];
-  for (let i = boundaryStart; i < tailStart; i++) {
+  for (let i = start; i < end; i++) {
     const entry = entries[i];
     if (entry?.type === "compaction") continue;
     for (const m of entryMessages(entry)) messages.push(m);
@@ -235,16 +235,19 @@ export function selectTail(input: SelectTailInput): SelectionResult {
     }
   }
 
-  const headMessages = collectHeadMessages(branchEntries, boundaryStart, keep.start);
+  const headMessages = collectMessages(branchEntries, boundaryStart, keep.start);
   if (headMessages.length === 0 && !previousSummary && !input.previousSummary) {
     return { ok: false, reason: "nothing_to_summarize" };
   }
+
+  const tailMessages = collectMessages(branchEntries, keep.start, branchEntries.length);
 
   return {
     ok: true,
     firstKeptEntryId: keep.id,
     tailStartIndex: keep.start,
     headMessages,
+    tailMessages,
     splitTurn: splitTurnFlag,
     keptTurns,
     preservedRecentTokens: budget,
