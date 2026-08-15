@@ -20,5 +20,7 @@
     "maxRetries": 3,
     "baseDelayMs": 2000
   },
-  "debug": false
+  "debug": false,
+  "pruneTrigger": "pressure",
+  "prunePressureRatio": null
 }

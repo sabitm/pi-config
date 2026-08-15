@@ -1,6 +1,62 @@
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
-import type { OcCompactConfig } from "./types";
+import type { OcCompactConfig, PruneTrigger } from "./types";
 import { isPruneMarker, PRUNE_MARKER } from "./serialize";
+
+export type { PruneTrigger };
+
+export interface PruneEngagementInput {
+  trigger: PruneTrigger;
+  ratio: number | null;
+  contextWindow: number | null;
+  reserveTokens: number;
+  contextEstimate: number;
+  engaged: boolean;
+}
+
+export function shouldPruneThisRequest(input: PruneEngagementInput): boolean {
+  if (input.trigger === "always") return true;
+  // Unknown window: fail safe to legacy always-prune rather than silently never pruning.
+  if (input.contextWindow == null || input.contextWindow <= 0) return true;
+  // Latch first so a post-prune estimate cannot flip the session back to unpruned history.
+  if (input.engaged) return true;
+  const threshold =
+    input.ratio != null
+      ? input.contextWindow * input.ratio
+      : input.contextWindow - Math.max(0, input.reserveTokens);
+  return input.contextEstimate > threshold;
+}
+
+const calculateContextTokensLocal = (usage: any): number => {
+  if (!usage || typeof usage !== "object") return 0;
+  return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+};
+
+const lastValidAssistantUsage = (messages: any[]): { usage: any; index: number } | undefined => {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role !== "assistant" || !msg.usage) continue;
+    if (msg.stopReason === "aborted" || msg.stopReason === "error") continue;
+    const tokens = calculateContextTokensLocal(msg.usage);
+    if (typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0) {
+      return { usage: msg.usage, index: i };
+    }
+  }
+  return undefined;
+};
+
+export function estimateContextTokensLocal(messages: any[]): number {
+  const usageInfo = lastValidAssistantUsage(messages);
+  if (!usageInfo) {
+    let estimated = 0;
+    for (const message of messages) estimated += estimateTokens(message);
+    return estimated;
+  }
+  let trailing = 0;
+  for (let i = usageInfo.index + 1; i < messages.length; i++) {
+    trailing += estimateTokens(messages[i]);
+  }
+  return calculateContextTokensLocal(usageInfo.usage) + trailing;
+}
 
 const contentTextOf = (content: unknown): string => {
   if (typeof content === "string") return content;

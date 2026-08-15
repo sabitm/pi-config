@@ -2,7 +2,13 @@ import { writeFileSync } from "fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { estimateTokens, sessionEntryToContextMessages } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./config";
-import { estimatePruneSavings, pruneToolResults, stripOverflowMedia } from "./prune";
+import {
+  estimateContextTokensLocal,
+  estimatePruneSavings,
+  pruneToolResults,
+  shouldPruneThisRequest,
+  stripOverflowMedia,
+} from "./prune";
 import {
   consumeProactiveResume,
   estimateTokensAfterPrune,
@@ -26,6 +32,7 @@ const AUTO_CONTINUE_PROMPT =
 
 let lastStats: OcCompactStats | null = null;
 let pendingOverflowStrip = false;
+let pruneEngaged = false;
 let pendingAutoContinueTimer: ReturnType<typeof setTimeout> | null = null;
 let proactiveState: ProactiveState = initialProactiveState();
 
@@ -41,6 +48,7 @@ const resetSessionState = () => {
   proactiveState = initialProactiveState();
   lastStats = null;
   pendingOverflowStrip = false;
+  pruneEngaged = false;
 };
 
 const formatTokens = (n: number): string =>
@@ -108,7 +116,7 @@ const scheduleAutoContinue = (pi: ExtensionAPI) => {
   }, 0);
 };
 
-const resolveContextWindow = (ctx: any, fallbackReserve: number): number => {
+const resolveKnownContextWindow = (ctx: any): number | null => {
   try {
     const usage = ctx?.getContextUsage?.();
     if (usage && typeof usage.contextWindow === "number" && usage.contextWindow > 0) {
@@ -119,9 +127,11 @@ const resolveContextWindow = (ctx: any, fallbackReserve: number): number => {
   }
   const modelWindow = ctx?.model?.contextWindow;
   if (typeof modelWindow === "number" && modelWindow > 0) return modelWindow;
-  // Sensible default if unknown
-  return Math.max(32_000, fallbackReserve * 4);
+  return null;
 };
+
+const resolveContextWindow = (ctx: any, fallbackReserve: number): number =>
+  resolveKnownContextWindow(ctx) ?? Math.max(32_000, fallbackReserve * 4);
 
 const resolveAuth = async (ctx: any, model: any) => {
   if (!model) return null;
@@ -196,7 +206,7 @@ export const registerOcCompactHooks = (pi: ExtensionAPI) => {
     clearPendingAutoContinue();
   });
 
-  pi.on("context", (event) => {
+  pi.on("context", (event, ctx) => {
     const config = loadConfig();
     if (!config.enabled) return;
 
@@ -204,10 +214,24 @@ export const registerOcCompactHooks = (pi: ExtensionAPI) => {
     let changed = false;
 
     if (config.prune) {
-      const pruned = pruneToolResults(messages, config);
-      if (pruned.prunedCount > 0) {
-        messages = pruned.messages;
-        changed = true;
+      const contextWindow = resolveKnownContextWindow(ctx);
+      const contextEstimate = estimateContextTokensLocal(messages);
+      if (
+        shouldPruneThisRequest({
+          trigger: config.pruneTrigger,
+          ratio: config.prunePressureRatio,
+          contextWindow,
+          reserveTokens: config.reserveTokens,
+          contextEstimate,
+          engaged: pruneEngaged,
+        })
+      ) {
+        pruneEngaged = true;
+        const pruned = pruneToolResults(messages, config);
+        if (pruned.prunedCount > 0) {
+          messages = pruned.messages;
+          changed = true;
+        }
       }
     }
 
@@ -247,6 +271,8 @@ export const registerOcCompactHooks = (pi: ExtensionAPI) => {
 
     const messages = branchMessages(ctx);
     const pruneSavings = estimatePruneSavings(messages, config);
+    // When the prune latch is on, usage.tokens already reflects pruned requests while
+    // savings come from persisted unpruned entries, so this can over-subtract slightly.
     const tokensAfterPrune = estimateTokensAfterPrune(usage?.tokens ?? null, pruneSavings);
 
     const trigger = shouldTriggerProactiveCompact({
@@ -413,6 +439,7 @@ export const registerOcCompactHooks = (pi: ExtensionAPI) => {
   });
 
   pi.on("session_compact", async (event, ctx) => {
+    pruneEngaged = false;
     if (!event.fromExtension) {
       // Host stock path: clear any stale proactive tracking.
       proactiveState = reduceProactiveState(proactiveState, { type: "clear" });
@@ -444,3 +471,8 @@ export const registerOcCompactHooks = (pi: ExtensionAPI) => {
 
 /** Test seam: reset module-level session tracking. */
 export const __resetProactiveStateForTests = resetSessionState;
+
+/** Test seam: arm the one-shot overflow media strip. */
+export const __setPendingOverflowStripForTests = (value: boolean) => {
+  pendingOverflowStrip = value;
+};

@@ -1,5 +1,7 @@
 export type CompactionReason = "manual" | "threshold" | "overflow";
 
+export type PruneTrigger = "pressure" | "always";
+
 export interface OcCompactRetry {
   enabled: boolean;
   maxRetries: number;
@@ -10,6 +12,10 @@ export interface OcCompactConfig {
   /** When false, passthrough to stock pi compaction. Failure paths never use this. */
   enabled: boolean;
   prune: boolean;
+  /** pressure = engage under load then latch; always = prune every request. */
+  pruneTrigger: PruneTrigger;
+  /** null = window - reserve; otherwise engage when estimate > window * ratio. */
+  prunePressureRatio: number | null;
   pruneProtectTokens: number;
   pruneMinimumTokens: number;
   pruneTailTurns: number;

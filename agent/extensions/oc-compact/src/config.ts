@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
-import type { OcCompactConfig, OcCompactRetry } from "./types";
+import type { OcCompactConfig, OcCompactRetry, PruneTrigger } from "./types";
 
 export const SETTINGS_PATH_DEFAULT = join(homedir(), ".pi", "agent", "oc-compact-config.json");
 
@@ -16,6 +16,8 @@ const DEFAULT_RETRY: OcCompactRetry = {
 export const DEFAULT_CONFIG: OcCompactConfig = {
   enabled: true,
   prune: true,
+  pruneTrigger: "pressure",
+  prunePressureRatio: null,
   pruneProtectTokens: 40_000,
   pruneMinimumTokens: 20_000,
   pruneTailTurns: 2,
@@ -49,6 +51,15 @@ const asBool = (v: unknown, fallback: boolean): boolean =>
 const asStringArray = (v: unknown, fallback: string[]): string[] =>
   Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : fallback;
 
+const parsePruneTrigger = (v: unknown): PruneTrigger =>
+  v === "always" || v === "pressure" ? v : DEFAULT_CONFIG.pruneTrigger;
+
+const parsePrunePressureRatio = (v: unknown): number | null => {
+  if (v === null) return null;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return DEFAULT_CONFIG.prunePressureRatio;
+  return Math.min(1, v);
+};
+
 const parseRetry = (raw: unknown): OcCompactRetry => {
   if (!raw || typeof raw !== "object") return { ...DEFAULT_RETRY };
   const r = raw as Record<string, unknown>;
@@ -74,6 +85,8 @@ export function loadConfig(): OcCompactConfig {
   return {
     enabled: asBool(parsed.enabled, DEFAULT_CONFIG.enabled),
     prune: asBool(parsed.prune, DEFAULT_CONFIG.prune),
+    pruneTrigger: parsePruneTrigger(parsed.pruneTrigger),
+    prunePressureRatio: parsePrunePressureRatio(parsed.prunePressureRatio),
     pruneProtectTokens: Math.max(0, Math.floor(asNumber(parsed.pruneProtectTokens, DEFAULT_CONFIG.pruneProtectTokens))),
     pruneMinimumTokens: Math.max(0, Math.floor(asNumber(parsed.pruneMinimumTokens, DEFAULT_CONFIG.pruneMinimumTokens))),
     pruneTailTurns: Math.max(0, Math.floor(asNumber(parsed.pruneTailTurns, DEFAULT_CONFIG.pruneTailTurns))),
