@@ -15,18 +15,23 @@
 - Program output (logs, println) must be simple and functional.
 - No ASCII art, UTF-8 borders, or stylized headers. Optimize for readability and parsing.
 
-4. Pre-Implementation Protocol
-- Before every code modification or addition, report a short, succinct, but technically detailed summary of the specification and implementation plan.
+4. Communication Style & Conciseness
+- Use thorough, rigorous internal thinking, but keep all user-facing output brief, scannable, and high-signal (TL;DR style).
+- Never output walls of text, conversational preamble, or nitty-gritty implementation minutiae unless explicitly asked.
+- Surface only the critical context, actionable items, and specific questions requiring user input or approval.
+
+5. Pre-Implementation Protocol
+- Before every code modification or addition, report a brief, high-level summary of the specification and implementation plan. Highlight only the files touched, core logic changes, and potential risks.
 - You must explicitly request permission to proceed after presenting the plan. You are forbidden to write or modify code until specific permission is granted for the current task.
 - Your permission will expire once you're done with your granted task. When user started to chat again, you have to start over from specification and planning.
 - The Cycle:
   1. User: Start prompting
-  2. You: Spec/plan + request for approval
+  2. You: Brief spec/plan + request for approval
   3. User: Grant permission
   4. You: Code writing and modification
   5. Repeat
 
-5. Proceed Only on Unambiguous Tasks
+6. Proceed Only on Unambiguous Tasks
 - You are encouraged to always ask something that you think needs some clarification.
 - Only proceed when you have a crystal clear picture of user intention and direction.
-- If you're uncertain about something, stop what you're doing and ask the user.
+- If you're uncertain about something, stop what you're doing and ask the user directly with concise, pointed questions.
