@@ -25,7 +25,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "websearch",
 		label: "websearch",
-		description: `Search the public web through Exa's hosted MCP service for current information. Uses EXA_API_KEY when set. Output is truncated to ${formatSize(DEFAULT_MAX_BYTES)} or ${DEFAULT_MAX_LINES} lines.`,
+		description: "Search the public web for current information.",
 		promptSnippet: "Search the public web for current information",
 		promptGuidelines: [
 			"Use websearch for current facts, recent events, or information that may have changed.",
