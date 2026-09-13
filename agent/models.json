@@ -5,10 +5,42 @@
       "api": "openai-completions",
       "apiKey": "airouter",
       "models": [
-        { "id": "default", "contextWindow": 300000, "input": ["text", "image"] },
-        { "id": "default-2", "contextWindow": 300000, "input": ["text", "image"] },
-        { "id": "subagent", "contextWindow": 300000, "input": ["text", "image"] },
-        { "id": "subagent-2", "contextWindow": 300000, "input": ["text", "image"] }
+        {
+          "id": "default",
+          "contextWindow": 300000,
+          "input": [ "text", "image" ],
+          "compat": {
+            "sendSessionAffinityHeaders": true,
+            "sessionAffinityFormat": "openai"
+          }
+        },
+        {
+          "id": "default-2",
+          "contextWindow": 300000,
+          "input": [ "text", "image" ],
+          "compat": {
+            "sendSessionAffinityHeaders": true,
+            "sessionAffinityFormat": "openai"
+          }
+        },
+        {
+          "id": "subagent",
+          "contextWindow": 300000,
+          "input": [ "text", "image" ],
+          "compat": {
+            "sendSessionAffinityHeaders": true,
+            "sessionAffinityFormat": "openai"
+          }
+        },
+        {
+          "id": "subagent-2",
+          "contextWindow": 300000,
+          "input": [ "text", "image" ],
+          "compat": {
+            "sendSessionAffinityHeaders": true,
+            "sessionAffinityFormat": "openai"
+          }
+        }
       ]
     }
   }
