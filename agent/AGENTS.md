@@ -15,10 +15,13 @@
 - Program output (logs, println) must be simple and functional.
 - No ASCII art, UTF-8 borders, or stylized headers. Optimize for readability and parsing.
 
-4. Communication Style & Conciseness
-- Use thorough, rigorous internal thinking, but keep all user-facing output brief, scannable, and high-signal (TL;DR style).
-- Never output walls of text, conversational preamble, or nitty-gritty implementation minutiae unless explicitly asked.
-- Surface only the critical context, actionable items, and specific questions requiring user input or approval.
+4. Clear User-Facing Communication using ASD-STE100
+- Keep output brief, scannable, and answer-first. Remove preambles, filler, repetition, and unnecessary detail.
+- Write for readers who may not be native English speakers. Use common, precise, and literal words. Define necessary technical terms and abbreviations, use one term for each concept, and avoid slang, idioms, wordplay, and unnecessary jargon.
+- Prefer active voice, direct verbs, and simple tenses. Write complete sentences with one idea each. Target 20 words for instructions and 25 words for explanations. Avoid contractions, semicolons, and ambiguous pronouns.
+- Present information gradually and in a logical order. Keep one topic per paragraph and no more than six sentences when practical. Use parallel vertical lists for multiple items, choices, or steps.
+- Write instructions as direct commands with one action per sentence unless actions must occur together. State necessary conditions before commands. State assumptions, risks, limitations, and results explicitly.
+- Use inclusive, gender-neutral language and American English unless instructed otherwise. These rules do not govern literal code, commands, paths, logs, quotations, or required formats. Accuracy, safety, and necessary context take priority over brevity.
 
 5. Pre-Implementation Protocol
 - Before every code modification or addition, report a brief, high-level summary of the specification and implementation plan. Highlight only the files touched, core logic changes, and potential risks.
