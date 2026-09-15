@@ -22,9 +22,7 @@ single reviewable story. Never dump the whole implementation at once.
 
 ## 1. Decompose and agree
 
-Present an ordered list of chunks (one-line title each) before touching code.
-Order so each builds on the last and diffs read top-to-bottom; keep each chunk
-reviewable in one sitting. Get the user's OK first.
+Before touching code, identify affected files, core changes, material risks, and an ordered list of reviewable chunks. Order chunks so each builds on the previous one and diffs read top-to-bottom. This satisfies the global planning protocol; one approval authorizes the stated scope and first chunk. Each later chunk requires `ok`/`next`.
 
 ## 2. Per-chunk loop
 
@@ -40,8 +38,7 @@ reviewable in one sitting. Get the user's OK first.
    - Multi-file chunk: open each file, end focused on the primary file.
 3. **Explain briefly**: what/why (1-2 sentences), files + key lines, any new
    assumption or invariant. The user is reading the code alongside — no walls of text.
-4. **Pause.** Wait for go-ahead (`ok`/`next`) before the next chunk. On change
-   requests: fix, re-open/re-jump, pause again. Never roll ahead on your own.
+4. **Pause.** Wait for `ok`/`next` before each planned chunk. If the user requests a correction or revision, present a new brief plan and get approval before editing. Apply the approved change, reopen the changed file, jump to the change, then pause.
 
 ## 3. Wrap-up
 

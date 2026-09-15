@@ -29,7 +29,7 @@ Use `subagent-1` and `subagent-2` as senators.
 5. Separate facts, assumptions, inferences, and recommendations.
 6. Judge by correctness, evidence, coverage, feasibility, risk, simplicity, constraint compliance, and verifiability.
 7. Synthesize on merit, not authorship. Preserve material dissent or uncertainty; do not force consensus.
-8. Execution is a separate phase governed by user authorization and project rules. A new task starts a new senate cycle.
+8. The senate is read-only and never executes changes. Any implementation is a separate phase governed by the global planning and approval protocol. A new task starts a new senate cycle.
 
 ## Flow
 
@@ -38,7 +38,7 @@ Use `subagent-1` and `subagent-2` as senators.
 3. Send both senators the identical neutral brief in parallel with `agentScope: "user"`.
 4. Compare all positions topic by topic: consensus, Chair, Sub-1, Sub-2, hybrid, or unresolved.
 5. Produce one cohesive result suited to the requested task.
-6. If action would modify state, stop at the execution proposal unless already authorized.
+6. If implementation is needed, propose it as the next action without executing it.
 
 If one senator fails, continue and disclose it. If both fail, return the chair result and state that independent review was unavailable.
 
