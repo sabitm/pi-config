@@ -32,10 +32,13 @@ import {
 	appendRetryStats,
 	buildRetryPolicy,
 	createEmptyUsage,
+	DEFAULT_MAX_LENGTH_CONTINUATIONS,
 	DEFAULT_MAX_RETRIES,
 	DEFAULT_MAX_RETRY_DELAY_MS,
 	DEFAULT_RETRY_DELAY_MS,
 	isFailedResult,
+	isLengthStop,
+	LENGTH_CONTINUATION_PROMPT,
 	type OnUpdateCallback,
 	type RetryPolicy,
 	runSingleAgentWithRetries,
@@ -47,6 +50,7 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
+const MAX_LENGTH_CONTINUATIONS = DEFAULT_MAX_LENGTH_CONTINUATIONS;
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -150,22 +154,26 @@ function formatToolCall(
 }
 
 function getFinalOutput(messages: Message[]): string {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "assistant") {
-			for (const part of msg.content) {
-				if (part.type === "text") return part.text;
-			}
+	const parts: string[] = [];
+	for (const msg of messages) {
+		if (msg.role !== "assistant") continue;
+		for (const part of msg.content) {
+			if (part.type === "text" && part.text.trim()) parts.push(part.text);
 		}
 	}
-	return "";
+	return parts.join("\n\n");
 }
 
 function getResultOutput(result: SingleResult): string {
 	if (isFailedResult(result)) {
 		return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
 	}
-	return getFinalOutput(result.messages) || "(no output)";
+	return appendLengthLimitNote(getFinalOutput(result.messages) || "(no output)", result);
+}
+
+function appendLengthLimitNote(output: string, result: Pick<SingleResult, "lengthLimited">): string {
+	if (!result.lengthLimited) return output;
+	return `${output}\n\n[Output cut off: the response reached the output token limit after the continuation cap.]`;
 }
 
 function truncateParallelOutput(output: string): string {
@@ -224,6 +232,29 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
 	return { dir: tmpDir, filePath };
 }
 
+function findSessionFile(dir: string, sessionId: string): string | undefined {
+	const stack = [dir];
+	while (stack.length > 0) {
+		const current = stack.pop();
+		if (!current) continue;
+		let entries: fs.Dirent[];
+		try {
+			entries = fs.readdirSync(current, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			const full = path.join(current, entry.name);
+			if (entry.isDirectory()) {
+				stack.push(full);
+				continue;
+			}
+			if (entry.isFile() && entry.name.endsWith(`_${sessionId}.jsonl`)) return full;
+		}
+	}
+	return undefined;
+}
+
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
@@ -251,8 +282,16 @@ async function runSingleAgentAttempt(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
-): Promise<{ result: SingleResult; wasAborted: boolean }> {
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	session?: { id: string; dir: string; file?: string },
+): Promise<{ result: SingleResult; wasAborted: boolean; sessionFile?: string }> {
+	const args: string[] = ["--mode", "json", "-p"];
+	if (session?.file) {
+		args.push("--session", session.file);
+	} else if (session) {
+		args.push("--session-dir", session.dir, "--session-id", session.id);
+	} else {
+		args.push("--no-session");
+	}
 	if (agent.model) args.push("--model", agent.model);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
@@ -292,7 +331,7 @@ async function runSingleAgentAttempt(
 			args.push("--append-system-prompt", tmpPromptPath);
 		}
 
-		args.push(`Task: ${task}`);
+		args.push(task);
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
@@ -407,7 +446,8 @@ async function runSingleAgentAttempt(
 		});
 
 		currentResult.exitCode = exitCode;
-		return { result: currentResult, wasAborted };
+		if (session && !session.file) session.file = findSessionFile(session.dir, session.id);
+		return { result: currentResult, wasAborted, sessionFile: session?.file };
 	} finally {
 		if (tmpPromptPath)
 			try {
@@ -452,26 +492,85 @@ async function runSingleAgent(
 		};
 	}
 
-	return runSingleAgentWithRetries({
-		agentName,
-		retryPolicy,
-		signal,
-		onUpdate,
-		makeDetails,
-		runAttempt: (attempt) =>
-			runSingleAgentAttempt(
-				defaultCwd,
-				agent,
-				agentName,
-				task,
-				cwd,
-				step,
-				attempt,
-				signal,
-				onUpdate,
-				makeDetails,
-			),
-	});
+	const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-session-"));
+	const session = {
+		id: `subagent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+		dir: sessionDir,
+		file: undefined as string | undefined,
+	};
+	try {
+		return await runSingleAgentWithLengthContinuation({
+			defaultCwd,
+			agent,
+			agentName,
+			task,
+			cwd,
+			step,
+			retryPolicy,
+			signal,
+			onUpdate,
+			makeDetails,
+			session,
+		});
+	} finally {
+		fs.rmSync(sessionDir, { recursive: true, force: true });
+	}
+}
+
+async function runSingleAgentWithLengthContinuation(params: {
+	defaultCwd: string;
+	agent: AgentConfig;
+	agentName: string;
+	task: string;
+	cwd: string | undefined;
+	step: number | undefined;
+	retryPolicy: RetryPolicy;
+	signal: AbortSignal | undefined;
+	onUpdate: OnUpdateCallback | undefined;
+	makeDetails: (results: SingleResult[]) => SubagentDetails;
+	session: { id: string; dir: string; file?: string };
+}): Promise<SingleResult> {
+	const { defaultCwd, agent, agentName, cwd, step, retryPolicy, signal, onUpdate, makeDetails, session } = params;
+	let task = `Task: ${params.task}`;
+	let combined: SingleResult | undefined;
+
+	for (let continuation = 0; ; continuation++) {
+		const result = await runSingleAgentWithRetries({
+			agentName,
+			retryPolicy,
+			signal,
+			onUpdate,
+			makeDetails,
+			runAttempt: (attempt) =>
+				runSingleAgentAttempt(
+					defaultCwd,
+					agent,
+					agentName,
+					task,
+					cwd,
+					step,
+					attempt,
+					signal,
+					onUpdate,
+					makeDetails,
+					session,
+				),
+		});
+		combined = mergeLengthResult(combined, result, continuation);
+		if (!isLengthStop(result) || continuation >= MAX_LENGTH_CONTINUATIONS || !session.file) {
+			if (isLengthStop(result) && combined) combined.lengthLimited = true;
+			return combined as SingleResult;
+		}
+		task = LENGTH_CONTINUATION_PROMPT;
+	}
+}
+
+function mergeLengthResult(previous: SingleResult | undefined, next: SingleResult, continuation: number): SingleResult {
+	if (!previous) return next;
+	next.messages = [...previous.messages, ...next.messages];
+	next.usage = previous.usage;
+	next.continuations = continuation;
+	return next;
 }
 
 const TaskItem = Type.Object({
@@ -763,7 +862,12 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 				return {
-					content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
+					content: [
+						{
+							type: "text",
+							text: appendLengthLimitNote(getFinalOutput(result.messages) || "(no output)", result),
+						},
+					],
 					details: makeDetails("single")([result]),
 				};
 			}

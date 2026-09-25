@@ -13,6 +13,8 @@ import {
 	DEFAULT_RETRY_DELAY_MS,
 	getRetryFailureReason,
 	isFailedResult,
+	isLengthStop,
+	LENGTH_STOP_REASON,
 	type RetryPolicy,
 	runSingleAgentWithRetries,
 	type SingleResult,
@@ -214,6 +216,14 @@ describe("abortableSleep", () => {
 		const controller = new AbortController();
 		await abortableSleep(10, controller.signal);
 		controller.abort();
+	});
+});
+
+describe("isLengthStop", () => {
+	test("matches only a successful length stop", () => {
+		expect(isLengthStop(makeResult({ stopReason: LENGTH_STOP_REASON }))).toBe(true);
+		expect(isLengthStop(makeResult({ stopReason: "stop" }))).toBe(false);
+		expect(isLengthStop(makeResult({ exitCode: 1, stopReason: LENGTH_STOP_REASON }))).toBe(false);
 	});
 });
 

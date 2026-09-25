@@ -4,6 +4,11 @@ import type { Message } from "@earendil-works/pi-ai";
 export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_RETRY_DELAY_MS = 2000;
 export const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
+export const DEFAULT_MAX_LENGTH_CONTINUATIONS = 2;
+export const LENGTH_STOP_REASON = "length";
+
+export const LENGTH_CONTINUATION_PROMPT =
+	"The previous response reached the output token limit and was cut off. Continue from the cutoff. Do not repeat completed work.";
 
 export interface UsageStats {
 	input: number;
@@ -31,6 +36,8 @@ export interface SingleResult {
 	retries?: number;
 	retryReasons?: string[];
 	retrying?: boolean;
+	continuations?: number;
+	lengthLimited?: boolean;
 }
 
 export interface RetryPolicy {
@@ -68,6 +75,10 @@ export function cloneUsage(usage: UsageStats): UsageStats {
 
 export function isFailedResult(result: Pick<SingleResult, "exitCode" | "stopReason">): boolean {
 	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+}
+
+export function isLengthStop(result: Pick<SingleResult, "exitCode" | "stopReason">): boolean {
+	return result.exitCode === 0 && result.stopReason === LENGTH_STOP_REASON;
 }
 
 export function compactRetryReason(reason: string): string {
