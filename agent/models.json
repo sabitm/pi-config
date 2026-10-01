@@ -7,6 +7,7 @@
       "models": [
         {
           "id": "default",
+          "maxTokens": 32768,
           "contextWindow": 300000,
           "input": [ "text", "image" ],
           "compat": {
@@ -16,6 +17,7 @@
         },
         {
           "id": "default-2",
+          "maxTokens": 32768,
           "contextWindow": 300000,
           "input": [ "text", "image" ],
           "compat": {
@@ -25,6 +27,7 @@
         },
         {
           "id": "subagent",
+          "maxTokens": 32768,
           "contextWindow": 300000,
           "input": [ "text", "image" ],
           "compat": {
@@ -34,6 +37,7 @@
         },
         {
           "id": "subagent-2",
+          "maxTokens": 32768,
           "contextWindow": 300000,
           "input": [ "text", "image" ],
           "compat": {
