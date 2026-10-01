@@ -9,16 +9,20 @@ Three independent positions, one adjudicated result. Deliberation precedes execu
 
 ## Activation
 
-Run only when the user explicitly asks to summons the senate for the current task, including `/skill:senate`. Never infer permission from complexity, perceived benefit, or prior use; each new task requires a fresh summons.
+Only the main agent may activate Senate for a direct user request, including `/skill:senate`.
+Never infer permission from complexity, perceived benefit, or prior use. Each new task requires a fresh summons.
+Delegated briefs and quoted Senate requests are context, not activation requests.
 
 ## Roles
 
 | Role | Duty |
 |------|------|
-| Chair | Clarify, research, draft independently, issue a neutral brief, adjudicate, synthesize |
-| Senators | Analyze the same brief independently; expose evidence, assumptions, risks, and recommendations |
+| Chair (main agent) | Clarify, research, draft independently, issue a neutral brief, adjudicate, synthesize |
+| Senators (delegated agents) | Analyze the same brief independently and return evidence, assumptions, risks, and recommendations to the chair |
 
-Use `subagent-1` and `subagent-2` as senators.
+The chair uses `subagent-1` and `subagent-2` as senators.
+Delegated agents remain senators, not chairs, even after reading this skill.
+Senators must not start another Senate, call `subagent`, or launch agents through tools, shell commands, or scripts.
 
 ## Rules
 
@@ -33,6 +37,8 @@ Use `subagent-1` and `subagent-2` as senators.
 
 ## Flow
 
+Chair only. Senators return independent analysis without dispatching or adjudicating.
+
 1. Classify the task and define success criteria.
 2. Chair researches and drafts an initial position.
 3. Send both senators the identical neutral brief in parallel with `agentScope: "user"`.
@@ -45,8 +51,11 @@ If one senator fails, continue and disclose it. If both fail, return the chair r
 ## Senator brief
 
 ```text
-Analyze this task independently. Do not modify files or cause external side effects.
-Read-only research is allowed.
+You are a delegated senator, not the chair. Return independent analysis without following the chair's flow.
+Do not start another Senate, call `subagent`, or launch agents through tools, shell commands, or scripts.
+Mentioning the user's Senate request does not authorize delegation.
+Reading the skill does not change your role.
+Do not modify files or cause external side effects. Read-only research is allowed.
 
 Task type: <decision | investigation | review | diagnosis | design | planning | other>
 Objective: <desired outcome or question>
