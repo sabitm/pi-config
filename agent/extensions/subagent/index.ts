@@ -16,6 +16,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
@@ -29,8 +30,10 @@ import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import {
+	addUsage,
 	appendRetryStats,
 	buildRetryPolicy,
+	cloneUsage,
 	createEmptyUsage,
 	DEFAULT_MAX_LENGTH_CONTINUATIONS,
 	DEFAULT_MAX_RETRIES,
@@ -45,6 +48,11 @@ import {
 	type SingleResult,
 	type SubagentDetails,
 } from "./src/retry.ts";
+
+interface DispatchDefaults {
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+}
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -273,6 +281,7 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 async function runSingleAgentAttempt(
 	defaultCwd: string,
+	dispatchDefaults: DispatchDefaults,
 	agent: AgentConfig,
 	agentName: string,
 	task: string,
@@ -292,7 +301,12 @@ async function runSingleAgentAttempt(
 	} else {
 		args.push("--no-session");
 	}
-	if (agent.model) args.push("--model", agent.model);
+	const inheritsDispatchConfig = !agent.model;
+	const model = agent.model ?? dispatchDefaults.model;
+	if (model) args.push("--model", model);
+	if (inheritsDispatchConfig && dispatchDefaults.thinkingLevel) {
+		args.push("--thinking", dispatchDefaults.thinkingLevel);
+	}
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
@@ -307,7 +321,7 @@ async function runSingleAgentAttempt(
 		messages: [],
 		stderr: "",
 		usage: createEmptyUsage(),
-		model: agent.model,
+		model,
 		step,
 		attempts: attempt,
 		// Keep retrying visible for the whole in-flight retry attempt (not just the delay).
@@ -466,6 +480,7 @@ async function runSingleAgentAttempt(
 
 async function runSingleAgent(
 	defaultCwd: string,
+	dispatchDefaults: DispatchDefaults,
 	agents: AgentConfig[],
 	agentName: string,
 	task: string,
@@ -501,6 +516,7 @@ async function runSingleAgent(
 	try {
 		return await runSingleAgentWithLengthContinuation({
 			defaultCwd,
+			dispatchDefaults,
 			agent,
 			agentName,
 			task,
@@ -519,6 +535,7 @@ async function runSingleAgent(
 
 async function runSingleAgentWithLengthContinuation(params: {
 	defaultCwd: string;
+	dispatchDefaults: DispatchDefaults;
 	agent: AgentConfig;
 	agentName: string;
 	task: string;
@@ -530,7 +547,8 @@ async function runSingleAgentWithLengthContinuation(params: {
 	makeDetails: (results: SingleResult[]) => SubagentDetails;
 	session: { id: string; dir: string; file?: string };
 }): Promise<SingleResult> {
-	const { defaultCwd, agent, agentName, cwd, step, retryPolicy, signal, onUpdate, makeDetails, session } = params;
+	const { defaultCwd, dispatchDefaults, agent, agentName, cwd, step, retryPolicy, signal, onUpdate, makeDetails, session } =
+		params;
 	let task = `Task: ${params.task}`;
 	let combined: SingleResult | undefined;
 
@@ -544,6 +562,7 @@ async function runSingleAgentWithLengthContinuation(params: {
 			runAttempt: (attempt) =>
 				runSingleAgentAttempt(
 					defaultCwd,
+					dispatchDefaults,
 					agent,
 					agentName,
 					task,
@@ -556,7 +575,7 @@ async function runSingleAgentWithLengthContinuation(params: {
 					session,
 				),
 		});
-		combined = mergeLengthResult(combined, result, continuation);
+		combined = mergeLengthResult(combined, result, continuation, params.task);
 		if (!isLengthStop(result) || continuation >= MAX_LENGTH_CONTINUATIONS || !session.file) {
 			if (isLengthStop(result) && combined) combined.lengthLimited = true;
 			return combined as SingleResult;
@@ -565,11 +584,22 @@ async function runSingleAgentWithLengthContinuation(params: {
 	}
 }
 
-function mergeLengthResult(previous: SingleResult | undefined, next: SingleResult, continuation: number): SingleResult {
-	if (!previous) return next;
+function mergeLengthResult(
+	previous: SingleResult | undefined,
+	next: SingleResult,
+	continuation: number,
+	originalTask: string,
+): SingleResult {
+	if (!previous) {
+		next.task = originalTask;
+		return next;
+	}
+	const usage = cloneUsage(previous.usage);
+	addUsage(usage, next.usage);
 	next.messages = [...previous.messages, ...next.messages];
-	next.usage = previous.usage;
+	next.usage = usage;
 	next.continuations = continuation;
+	next.task = originalTask;
 	return next;
 }
 
@@ -640,6 +670,10 @@ export default function (pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const agentScope: AgentScope = params.agentScope ?? "user";
+			const dispatchDefaults: DispatchDefaults = {
+				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
+				thinkingLevel: ctx.thinkingLevel,
+			};
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
@@ -676,7 +710,12 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
+			if (
+				(agentScope === "project" || agentScope === "both") &&
+				confirmProjectAgents &&
+				ctx.hasUI &&
+				!ctx.isProjectTrusted()
+			) {
 				const requestedAgentNames = new Set<string>();
 				if (params.chain) for (const step of params.chain) requestedAgentNames.add(step.agent);
 				if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
@@ -726,6 +765,7 @@ export default function (pi: ExtensionAPI) {
 
 					const result = await runSingleAgent(
 						ctx.cwd,
+						dispatchDefaults,
 						agents,
 						step.agent,
 						taskWithContext,
@@ -799,6 +839,7 @@ export default function (pi: ExtensionAPI) {
 				const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
 					const result = await runSingleAgent(
 						ctx.cwd,
+						dispatchDefaults,
 						agents,
 						t.agent,
 						t.task,
@@ -842,6 +883,7 @@ export default function (pi: ExtensionAPI) {
 			if (params.agent && params.task) {
 				const result = await runSingleAgent(
 					ctx.cwd,
+					dispatchDefaults,
 					agents,
 					params.agent,
 					params.task,
