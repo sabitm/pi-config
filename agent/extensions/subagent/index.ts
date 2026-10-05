@@ -655,6 +655,12 @@ const SubagentParams = Type.Object({
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
 });
 
+function describeAvailableAgents(): string[] {
+	const agents = discoverAgents(getAgentDir(), "user").agents;
+	if (agents.length === 0) return [];
+	return ["Available agents: " + agents.map((a) => `${a.name} (${a.description})`).join(", ") + "."];
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "subagent",
@@ -665,6 +671,9 @@ export default function (pi: ExtensionAPI) {
 			"Retries subprocess/model errors by default with exponential backoff; user aborts are not retried.",
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
+			// Registration runs once per load, so this snapshot can go stale if agents are added mid-session.
+			// The unknown-agent error still lists every currently available agent.
+			...describeAvailableAgents(),
 		].join(" "),
 		parameters: SubagentParams,
 
