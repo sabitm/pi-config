@@ -68,6 +68,83 @@ export interface WebSearchRequest {
 	init: Omit<FetchRequestInit, "signal">;
 }
 
+const WEBSEARCH_ENV_KEYS: Record<WebSearchProvider, string> = {
+	exa: "EXA_API_KEY",
+	parallel: "PARALLEL_API_KEY",
+	firecrawl: "FIRECRAWL_API_KEY",
+	tavily: "TAVILY_API_KEY",
+	tinyfish: "TINYFISH_API_KEY",
+};
+
+function authFilePath(): string {
+	const dir = process.env.PI_CODING_AGENT_DIR?.trim();
+	if (dir) return `${dir.replace(/\/$/, "")}/auth.json`;
+	const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+	return home ? `${home}/.pi/agent/auth.json` : "auth.json";
+}
+
+function readAuthJson(): Record<string, unknown> | undefined {
+	try {
+		// Lazy require to avoid bundling fs in non-node envs unnecessarily
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		const fs = require("node:fs") as typeof import("node:fs");
+		const path = authFilePath();
+		if (!fs.existsSync(path)) return undefined;
+		const raw = fs.readFileSync(path, "utf8");
+		const data = JSON.parse(raw);
+		return data !== null && typeof data === "object"
+			? (data as Record<string, unknown>)
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function getNestedString(
+	root: Record<string, unknown> | undefined,
+	...keys: string[]
+): string | undefined {
+	let cur: unknown = root;
+	for (const key of keys) {
+		if (cur === null || typeof cur !== "object") return undefined;
+		cur = (cur as Record<string, unknown>)[key];
+	}
+	return typeof cur === "string" && cur.trim() ? cur.trim() : undefined;
+}
+
+export function getWebSearchApiKeyFromAuthFile(
+	provider: WebSearchProvider,
+	auth?: Record<string, unknown>,
+): string | undefined {
+	const root = auth ?? readAuthJson();
+	if (!root) return undefined;
+	const envKey = WEBSEARCH_ENV_KEYS[provider];
+	const flat = getNestedString(root, envKey);
+	if (flat) return flat;
+	const nestedKeys = getNestedString(root, "websearch", "keys", provider);
+	if (nestedKeys) return nestedKeys;
+	const direct = getNestedString(root, "websearch", provider);
+	if (direct) return direct;
+	const wsRoot = getRecord(root["websearch"]);
+	if (!wsRoot) return undefined;
+	const wsProviderRaw = wsRoot[provider];
+	if (typeof wsProviderRaw === "string" && wsProviderRaw.trim()) return wsProviderRaw.trim();
+	const wsProviderObj = getRecord(wsProviderRaw);
+	if (!wsProviderObj) return undefined;
+	for (const field of ["key", "apiKey", "api_key"]) {
+		const value = wsProviderObj[field];
+		if (typeof value === "string" && value.trim()) return value.trim();
+	}
+	return undefined;
+}
+
+export function getWebSearchApiKey(provider: WebSearchProvider): string | undefined {
+	const envVar = WEBSEARCH_ENV_KEYS[provider];
+	const fromEnv = process.env[envVar]?.trim();
+	if (fromEnv) return fromEnv;
+	return getWebSearchApiKeyFromAuthFile(provider);
+}
+
 function textEncoderByteLength(value: string): number {
 	return new TextEncoder().encode(value).byteLength;
 }
@@ -151,7 +228,7 @@ function mcpRequest(
 	};
 }
 
-export function buildExaRequest(query: string, apiKey = process.env.EXA_API_KEY): WebSearchRequest {
+export function buildExaRequest(query: string, apiKey = getWebSearchApiKey("exa")): WebSearchRequest {
 	const value = trimmedQuery(query);
 	const url = new URL(EXA_MCP_URL);
 	if (apiKey?.trim()) url.searchParams.set("exaApiKey", apiKey.trim());
@@ -163,7 +240,7 @@ export function buildExaRequest(query: string, apiKey = process.env.EXA_API_KEY)
 
 export function buildParallelRequest(
 	query: string,
-	apiKey = process.env.PARALLEL_API_KEY,
+	apiKey = getWebSearchApiKey("parallel"),
 ): WebSearchRequest {
 	const value = trimmedQuery(query);
 	const headers: Record<string, string> = { "User-Agent": "pi" };
@@ -178,7 +255,7 @@ export function buildParallelRequest(
 
 export function buildFirecrawlRequest(
 	query: string,
-	apiKey = process.env.FIRECRAWL_API_KEY,
+	apiKey = getWebSearchApiKey("firecrawl"),
 ): WebSearchRequest {
 	const value = trimmedQuery(query);
 	const headers: Record<string, string> = { "User-Agent": "pi" };
@@ -188,7 +265,7 @@ export function buildFirecrawlRequest(
 
 export function buildTavilyRequest(
 	query: string,
-	apiKey = process.env.TAVILY_API_KEY,
+	apiKey = getWebSearchApiKey("tavily"),
 ): WebSearchRequest {
 	const value = trimmedQuery(query);
 	const headers: Record<string, string> = {
@@ -227,14 +304,14 @@ export function buildTinyfishRequest(
 	options: { sessionId?: string; apiKey?: string } = {},
 ): WebSearchRequest {
 	const value = trimmedQuery(query);
-	const apiKey = options.apiKey ?? process.env.TINYFISH_API_KEY;
+	const apiKey = options.apiKey ?? getWebSearchApiKey("tinyfish");
 	const headers = tinyfishHeaders(apiKey);
 	if (options.sessionId) headers["Mcp-Session-Id"] = options.sessionId;
 	return mcpRequest(TINYFISH_MCP_URL, TINYFISH_TOOL_NAME, { query: value }, headers);
 }
 
 export function buildTinyfishInitializeRequest(
-	apiKey = process.env.TINYFISH_API_KEY,
+	apiKey = getWebSearchApiKey("tinyfish"),
 ): WebSearchRequest {
 	return {
 		url: TINYFISH_MCP_URL,
@@ -261,7 +338,7 @@ export function buildTinyfishInitializeRequest(
 
 export function buildTinyfishInitializedNotification(
 	sessionId: string,
-	apiKey = process.env.TINYFISH_API_KEY,
+	apiKey = getWebSearchApiKey("tinyfish"),
 ): WebSearchRequest {
 	return {
 		url: TINYFISH_MCP_URL,
@@ -656,7 +733,7 @@ export async function searchTavily(query: string, options: WebSearchOptions = {}
 }
 
 export async function initializeTinyfish(options: WebSearchOptions = {}): Promise<string> {
-	const apiKey = options.apiKey ?? process.env.TINYFISH_API_KEY;
+	const apiKey = options.apiKey ?? getWebSearchApiKey("tinyfish");
 	if (!apiKey?.trim()) throw new Error("TinyFish API key required for initialize");
 
 	const { response } = await fetchText(
@@ -678,7 +755,7 @@ export async function initializeTinyfish(options: WebSearchOptions = {}): Promis
 }
 
 export async function searchTinyfish(query: string, options: WebSearchOptions = {}): Promise<string> {
-	const apiKey = options.apiKey ?? process.env.TINYFISH_API_KEY;
+	const apiKey = options.apiKey ?? getWebSearchApiKey("tinyfish");
 	const sessionId = apiKey?.trim() ? await initializeTinyfish({ ...options, apiKey }) : undefined;
 	const request = buildTinyfishRequest(query, { apiKey, sessionId });
 	const { body } = await fetchText("TinyFish web search", request, options);
