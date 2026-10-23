@@ -2,11 +2,26 @@ const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
 export const EXA_TOOL_NAME = "web_search_exa";
 export const PARALLEL_MCP_URL = "https://search.parallel.ai/mcp";
 export const PARALLEL_TOOL_NAME = "web_search";
+export const FIRECRAWL_MCP_URL = "https://mcp.firecrawl.dev/v2/mcp";
+export const FIRECRAWL_TOOL_NAME = "firecrawl_search";
+export const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
+export const TINYFISH_MCP_URL = "https://agent.tinyfish.ai/mcp";
+export const TINYFISH_TOOL_NAME = "search";
 export const EXA_REQUEST_ID = 1;
 export const DEFAULT_TIMEOUT_MS = 25_000;
 export const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
+export const NO_RESULTS = "No search results found. Please try a different query.";
 
-export type WebSearchProvider = "exa" | "parallel";
+export const WEB_SEARCH_PROVIDERS = ["exa", "parallel", "firecrawl", "tavily", "tinyfish"] as const;
+
+export type WebSearchProvider = (typeof WEB_SEARCH_PROVIDERS)[number];
+
+export interface WebSearchResult {
+	url: string;
+	title?: string;
+	content?: string;
+	published?: string;
+}
 
 interface ResponseBodyReader {
 	read(): Promise<{ done: boolean; value?: Uint8Array }>;
@@ -18,10 +33,15 @@ interface ResponseBody {
 	getReader(): ResponseBodyReader;
 }
 
+interface ResponseHeaders {
+	get(name: string): string | null;
+}
+
 export interface FetchResponse {
 	readonly ok: boolean;
 	readonly status: number;
 	readonly statusText: string;
+	readonly headers?: ResponseHeaders | Record<string, string>;
 	readonly body?: ResponseBody | null;
 	text(): Promise<string>;
 }
@@ -35,7 +55,7 @@ export interface FetchRequestInit {
 
 export type FetchLike = (url: string, init: FetchRequestInit) => Promise<FetchResponse>;
 
-export interface ExaSearchOptions {
+export interface WebSearchOptions {
 	signal?: AbortSignal;
 	timeoutMs?: number;
 	maxResponseBytes?: number;
@@ -43,12 +63,7 @@ export interface ExaSearchOptions {
 	fetchImpl?: FetchLike;
 }
 
-export interface ParallelSearchOptions extends ExaSearchOptions {
-	sessionId?: string;
-	modelName?: string;
-}
-
-export interface ExaRequest {
+export interface WebSearchRequest {
 	url: string;
 	init: Omit<FetchRequestInit, "signal">;
 }
@@ -73,95 +88,192 @@ export function selectWebSearchProvider(sessionID: string): WebSearchProvider {
 	return Number.parseInt(cs ?? "0", 36) % 2 === 0 ? "exa" : "parallel";
 }
 
-export function webSearchModelName(model: unknown): string | undefined {
-	if (!model || typeof model !== "object") return undefined;
-	const record = model as Record<string, unknown>;
-	const api = record.api;
-	const apiRecord = api && typeof api === "object" ? (api as Record<string, unknown>) : undefined;
-	const apiID = apiRecord && "id" in apiRecord && typeof apiRecord.id === "string" ? apiRecord.id : undefined;
-	const id = "id" in record && typeof record.id === "string" ? record.id : undefined;
-	return (apiID ?? id)?.slice(0, 100);
+export function webSearchProviderOrder(sessionID: string): WebSearchProvider[] {
+	const cs = checksum(sessionID);
+	const start = Number.parseInt(cs ?? "0", 36) % WEB_SEARCH_PROVIDERS.length;
+	return [...WEB_SEARCH_PROVIDERS.slice(start), ...WEB_SEARCH_PROVIDERS.slice(0, start)];
 }
 
-function parallelAuthHeaders(apiKey = process.env.PARALLEL_API_KEY): Record<string, string> {
-	const headers: Record<string, string> = { "User-Agent": "pi" };
-	if (apiKey?.trim()) {
-		headers.Authorization = `Bearer ${apiKey.trim()}`;
+export async function searchWithFallback(
+	query: string,
+	sessionID: string,
+	search: (provider: WebSearchProvider) => Promise<string>,
+	signal?: AbortSignal,
+): Promise<{ provider: WebSearchProvider; output: string }> {
+	const attempted = new Set<WebSearchProvider>();
+	let lastError: unknown;
+
+	for (const provider of webSearchProviderOrder(sessionID)) {
+		if (attempted.has(provider)) continue;
+		attempted.add(provider);
+		if (signal?.aborted) break;
+		try {
+			return { provider, output: await search(provider) };
+		} catch (error) {
+			// User abort must not trigger another provider.
+			if (signal?.aborted) throw error;
+			lastError = error;
+		}
 	}
-	return headers;
+
+	if (lastError instanceof Error) throw lastError;
+	throw new Error("Web search aborted");
 }
 
-export function buildExaRequest(query: string, apiKey = process.env.EXA_API_KEY): ExaRequest {
-	const trimmedQuery = query.trim();
-	if (!trimmedQuery) {
-		throw new Error("Search query must not be empty");
-	}
+function trimmedQuery(query: string): string {
+	const value = query.trim();
+	if (!value) throw new Error("Search query must not be empty");
+	return value;
+}
 
-	const url = new URL(EXA_MCP_URL);
-	if (apiKey?.trim()) {
-		url.searchParams.set("exaApiKey", apiKey.trim());
-	}
-
+function mcpRequest(
+	url: string,
+	tool: string,
+	args: Record<string, unknown>,
+	headers: Record<string, string> = {},
+): WebSearchRequest {
 	return {
-		url: url.toString(),
+		url,
 		init: {
 			method: "POST",
 			headers: {
 				Accept: "application/json, text/event-stream",
 				"Content-Type": "application/json",
+				...headers,
 			},
 			body: JSON.stringify({
 				jsonrpc: "2.0",
 				id: EXA_REQUEST_ID,
 				method: "tools/call",
+				params: { name: tool, arguments: args },
+			}),
+		},
+	};
+}
+
+export function buildExaRequest(query: string, apiKey = process.env.EXA_API_KEY): WebSearchRequest {
+	const value = trimmedQuery(query);
+	const url = new URL(EXA_MCP_URL);
+	if (apiKey?.trim()) url.searchParams.set("exaApiKey", apiKey.trim());
+	return mcpRequest(url.toString(), EXA_TOOL_NAME, {
+		query: value,
+		numResults: 8,
+	});
+}
+
+export function buildParallelRequest(
+	query: string,
+	apiKey = process.env.PARALLEL_API_KEY,
+): WebSearchRequest {
+	const value = trimmedQuery(query);
+	const headers: Record<string, string> = { "User-Agent": "pi" };
+	if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
+	return mcpRequest(
+		PARALLEL_MCP_URL,
+		PARALLEL_TOOL_NAME,
+		{ objective: value, search_queries: [value] },
+		headers,
+	);
+}
+
+export function buildFirecrawlRequest(
+	query: string,
+	apiKey = process.env.FIRECRAWL_API_KEY,
+): WebSearchRequest {
+	const value = trimmedQuery(query);
+	const headers: Record<string, string> = { "User-Agent": "pi" };
+	if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
+	return mcpRequest(FIRECRAWL_MCP_URL, FIRECRAWL_TOOL_NAME, { query: value, limit: 8 }, headers);
+}
+
+export function buildTavilyRequest(
+	query: string,
+	apiKey = process.env.TAVILY_API_KEY,
+): WebSearchRequest {
+	const value = trimmedQuery(query);
+	const headers: Record<string, string> = {
+		Accept: "application/json",
+		"Content-Type": "application/json",
+		"User-Agent": "pi",
+		"X-Client-Name": "opencode2",
+	};
+	if (apiKey?.trim()) headers.Authorization = `Bearer ${apiKey.trim()}`;
+	else headers["X-Tavily-Access-Mode"] = "keyless";
+
+	return {
+		url: TAVILY_SEARCH_URL,
+		init: {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				query: value,
+				search_depth: "basic",
+				chunks_per_source: 3,
+				max_results: 8,
+			}),
+		},
+	};
+}
+
+function tinyfishHeaders(apiKey: string | undefined): Record<string, string> {
+	const headers: Record<string, string> = { "User-Agent": "pi" };
+	if (apiKey?.trim()) headers["X-API-Key"] = apiKey.trim();
+	else headers["X-TinyFish-Access-Mode"] = "keyless";
+	return headers;
+}
+
+export function buildTinyfishRequest(
+	query: string,
+	options: { sessionId?: string; apiKey?: string } = {},
+): WebSearchRequest {
+	const value = trimmedQuery(query);
+	const apiKey = options.apiKey ?? process.env.TINYFISH_API_KEY;
+	const headers = tinyfishHeaders(apiKey);
+	if (options.sessionId) headers["Mcp-Session-Id"] = options.sessionId;
+	return mcpRequest(TINYFISH_MCP_URL, TINYFISH_TOOL_NAME, { query: value }, headers);
+}
+
+export function buildTinyfishInitializeRequest(
+	apiKey = process.env.TINYFISH_API_KEY,
+): WebSearchRequest {
+	return {
+		url: TINYFISH_MCP_URL,
+		init: {
+			method: "POST",
+			headers: {
+				Accept: "application/json, text/event-stream",
+				"Content-Type": "application/json",
+				...tinyfishHeaders(apiKey),
+			},
+			body: JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "initialize",
 				params: {
-					name: EXA_TOOL_NAME,
-					arguments: {
-						query: trimmedQuery,
-						type: "auto",
-						numResults: 8,
-						livecrawl: "fallback",
-					},
+					protocolVersion: "2025-06-18",
+					capabilities: {},
+					clientInfo: { name: "pi", version: "1.0" },
 				},
 			}),
 		},
 	};
 }
 
-export function buildParallelRequest(
-	query: string,
-	options: { sessionId?: string; modelName?: string; apiKey?: string } = {},
-): ExaRequest {
-	const trimmedQuery = query.trim();
-	if (!trimmedQuery) {
-		throw new Error("Search query must not be empty");
-	}
-
-	const args: Record<string, unknown> = {
-		objective: trimmedQuery,
-		search_queries: [trimmedQuery],
-	};
-	if (options.sessionId) args.session_id = options.sessionId;
-	if (options.modelName) args.model_name = options.modelName;
-
+export function buildTinyfishInitializedNotification(
+	sessionId: string,
+	apiKey = process.env.TINYFISH_API_KEY,
+): WebSearchRequest {
 	return {
-		url: PARALLEL_MCP_URL,
+		url: TINYFISH_MCP_URL,
 		init: {
 			method: "POST",
 			headers: {
 				Accept: "application/json, text/event-stream",
 				"Content-Type": "application/json",
-				...parallelAuthHeaders(options.apiKey),
+				...tinyfishHeaders(apiKey),
+				"Mcp-Session-Id": sessionId,
 			},
-			body: JSON.stringify({
-				jsonrpc: "2.0",
-				id: EXA_REQUEST_ID,
-				method: "tools/call",
-				params: {
-					name: PARALLEL_TOOL_NAME,
-					arguments: args,
-				},
-			}),
+			body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
 		},
 	};
 }
@@ -170,34 +282,21 @@ function getRecord(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 }
 
-function getMcpText(payload: unknown): string | undefined {
-	const envelope = getRecord(payload);
-	if (!envelope) return undefined;
-
-	const error = getRecord(envelope.error);
-	if (error) {
-		const message = typeof error.message === "string" ? error.message : JSON.stringify(error);
-		throw new Error(`Web search failed: ${message}`);
-	}
-
-	const result = getRecord(envelope.result);
-	if (!result) return undefined;
-	if (result.isError === true) {
-		throw new Error("Web search returned an error result");
-	}
-
-	if (!Array.isArray(result.content)) return undefined;
+function getMcpTextFromResult(result: Record<string, unknown> | undefined): string | undefined {
+	if (!result || !Array.isArray(result.content)) return undefined;
 	const texts = result.content
 		.map((item) => {
 			const content = getRecord(item);
 			return typeof content?.text === "string" ? content.text.trim() : "";
 		})
 		.filter(Boolean);
-
 	return texts.length > 0 ? texts.join("\n\n") : undefined;
 }
 
-export function parseMcpResponse(body: string, expectedId = EXA_REQUEST_ID): string {
+export function parseMcpResult(
+	body: string,
+	expectedId = EXA_REQUEST_ID,
+): Record<string, unknown> | undefined {
 	const trimmed = body.trim();
 	const candidates: string[] = [];
 	if (trimmed.startsWith("{")) candidates.push(trimmed);
@@ -219,19 +318,33 @@ export function parseMcpResponse(body: string, expectedId = EXA_REQUEST_ID): str
 		}
 		parsedPayload = true;
 		const envelope = getRecord(payload);
+		if (!envelope) continue;
 		// Missing/null ids are accepted; a present mismatch is a different RPC reply.
-		const id = envelope?.id;
-		if (id !== undefined && id !== null && id !== expectedId) {
-			continue;
+		const id = envelope.id;
+		if (id !== undefined && id !== null && id !== expectedId) continue;
+
+		const error = getRecord(envelope.error);
+		if (error) {
+			const message = typeof error.message === "string" ? error.message : JSON.stringify(error);
+			throw new Error(`Web search failed: ${message}`);
 		}
-		const text = getMcpText(payload);
-		if (text) return text;
+
+		const result = getRecord(envelope.result);
+		if (result?.isError === true) {
+			throw new Error("Web search returned an error result");
+		}
+		return result;
 	}
 
-	if (parsedPayload) {
-		throw new Error("Web search returned no text results");
-	}
+	if (parsedPayload) return undefined;
 	throw new Error("Web search returned an invalid MCP response");
+}
+
+export function parseMcpResponse(body: string, expectedId = EXA_REQUEST_ID): string {
+	const result = parseMcpResult(body, expectedId);
+	const text = getMcpTextFromResult(result);
+	if (text) return text;
+	throw new Error("Web search returned no text results");
 }
 
 export async function readResponseBody(response: FetchResponse, maxBytes: number): Promise<string> {
@@ -279,8 +392,21 @@ function compactHttpErrorBody(body: string): string {
 	return body.replace(/\s+/g, " ").trim().slice(0, 500);
 }
 
-export async function searchExa(query: string, options: ExaSearchOptions = {}): Promise<string> {
-	const request = buildExaRequest(query, options.apiKey);
+function readHeader(response: FetchResponse, name: string): string | undefined {
+	const headers = response.headers;
+	if (!headers) return undefined;
+	if (typeof (headers as ResponseHeaders).get === "function") {
+		return (headers as ResponseHeaders).get(name) ?? undefined;
+	}
+	const record = headers as Record<string, string>;
+	return record[name] ?? record[name.toLowerCase()];
+}
+
+async function fetchText(
+	label: string,
+	request: WebSearchRequest,
+	options: WebSearchOptions,
+): Promise<{ body: string; response: FetchResponse }> {
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
 	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -312,10 +438,10 @@ export async function searchExa(query: string, options: ExaSearchOptions = {}): 
 	}, timeoutMs);
 
 	try {
-		if (externallyAborted) throw new Error("Exa web search aborted");
+		if (externallyAborted) throw new Error(`${label} aborted`);
 		const response = await fetchImpl(request.url, { ...request.init, signal: controller.signal });
-		if (timedOut) throw new Error("Exa web search timed out");
-		if (externallyAborted || options.signal?.aborted) throw new Error("Exa web search aborted");
+		if (timedOut) throw new Error(`${label} timed out`);
+		if (externallyAborted || options.signal?.aborted) throw new Error(`${label} aborted`);
 
 		if (!response.ok) {
 			let errorBody = "";
@@ -326,20 +452,20 @@ export async function searchExa(query: string, options: ExaSearchOptions = {}): 
 			}
 			const suffix = compactHttpErrorBody(errorBody);
 			throw new Error(
-				`Exa web search request failed (${response.status} ${response.statusText || "HTTP error"})${suffix ? `: ${suffix}` : ""}`,
+				`${label} request failed (${response.status} ${response.statusText || "HTTP error"})${suffix ? `: ${suffix}` : ""}`,
 			);
 		}
 
 		const body = await readResponseBody(response, maxResponseBytes);
-		if (timedOut) throw new Error("Exa web search timed out");
-		if (externallyAborted || options.signal?.aborted) throw new Error("Exa web search aborted");
-		return parseMcpResponse(body, EXA_REQUEST_ID);
+		if (timedOut) throw new Error(`${label} timed out`);
+		if (externallyAborted || options.signal?.aborted) throw new Error(`${label} aborted`);
+		return { body, response };
 	} catch (error) {
 		if (timedOut) {
-			throw new Error(`Exa web search timed out after ${timeoutMs}ms`);
+			throw new Error(`${label} timed out after ${timeoutMs}ms`);
 		}
 		if (externallyAborted || options.signal?.aborted) {
-			throw new Error("Exa web search aborted");
+			throw new Error(`${label} aborted`);
 		}
 		if (error instanceof Error) throw error;
 		throw new Error(String(error));
@@ -349,76 +475,214 @@ export async function searchExa(query: string, options: ExaSearchOptions = {}): 
 	}
 }
 
-export async function searchParallel(query: string, options: ParallelSearchOptions = {}): Promise<string> {
-	const request = buildParallelRequest(query, {
-		sessionId: options.sessionId,
-		modelName: options.modelName,
-		apiKey: options.apiKey,
-	});
-	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-	const maxResponseBytes = options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-		throw new Error("Search timeout must be greater than zero");
-	}
+function toIsoDate(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const time = Date.parse(value);
+	return Number.isFinite(time) ? new Date(time).toISOString() : undefined;
+}
 
-	const fetchImpl = options.fetchImpl ?? (globalThis as { fetch?: FetchLike }).fetch;
-	if (!fetchImpl) {
-		throw new Error("Fetch is unavailable; cannot perform web search");
-	}
-
-	const controller = new AbortController();
-	let timedOut = false;
-	let externallyAborted = false;
-	const onAbort = () => {
-		externallyAborted = true;
-		controller.abort();
-	};
-	if (options.signal?.aborted) {
-		externallyAborted = true;
-		controller.abort();
-	} else {
-		options.signal?.addEventListener("abort", onAbort, { once: true });
-	}
-
-	const timeout = setTimeout(() => {
-		timedOut = true;
-		controller.abort();
-	}, timeoutMs);
-
+function safeJson(value: string): unknown {
 	try {
-		if (externallyAborted) throw new Error("Parallel web search aborted");
-		const response = await fetchImpl(request.url, { ...request.init, signal: controller.signal });
-		if (timedOut) throw new Error("Parallel web search timed out");
-		if (externallyAborted || options.signal?.aborted) throw new Error("Parallel web search aborted");
-
-		if (!response.ok) {
-			let errorBody = "";
-			try {
-				errorBody = await readResponseBody(response, maxResponseBytes);
-			} catch {
-				// Preserve the HTTP status when the error body cannot be read.
-			}
-			const suffix = compactHttpErrorBody(errorBody);
-			throw new Error(
-				`Parallel web search request failed (${response.status} ${response.statusText || "HTTP error"})${suffix ? `: ${suffix}` : ""}`,
-			);
-		}
-
-		const body = await readResponseBody(response, maxResponseBytes);
-		if (timedOut) throw new Error("Parallel web search timed out");
-		if (externallyAborted || options.signal?.aborted) throw new Error("Parallel web search aborted");
-		return parseMcpResponse(body, EXA_REQUEST_ID);
-	} catch (error) {
-		if (timedOut) {
-			throw new Error(`Parallel web search timed out after ${timeoutMs}ms`);
-		}
-		if (externallyAborted || options.signal?.aborted) {
-			throw new Error("Parallel web search aborted");
-		}
-		if (error instanceof Error) throw error;
-		throw new Error(String(error));
-	} finally {
-		clearTimeout(timeout);
-		options.signal?.removeEventListener("abort", onAbort);
+		return JSON.parse(value);
+	} catch {
+		return undefined;
 	}
+}
+
+export function parseExaResults(text: string): WebSearchResult[] {
+	return text.split(/\n\n---\n\n/).flatMap((block) => {
+		const url = /^URL:\s*(.+)$/m.exec(block)?.[1]?.trim();
+		if (!url) return [];
+		const title = /^Title:\s*(.+)$/m.exec(block)?.[1]?.trim();
+		const publishedText = /^Published:\s*(.+)$/m.exec(block)?.[1]?.trim();
+		const content = /^(?:Highlights|Text):\s*\n?([\s\S]*)$/m.exec(block)?.[1]?.trim();
+		const published =
+			publishedText && publishedText !== "N/A" ? toIsoDate(publishedText) : undefined;
+		return [
+			{
+				url,
+				...(title && title !== "N/A" ? { title } : {}),
+				...(content ? { content } : {}),
+				...(published ? { published } : {}),
+			},
+		];
+	});
+}
+
+export function parseParallelResults(structuredContent: unknown): WebSearchResult[] {
+	const results = getRecord(structuredContent)?.results;
+	if (!Array.isArray(results)) return [];
+	return results.flatMap((item) => {
+		const result = getRecord(item);
+		const url = typeof result?.url === "string" ? result.url : undefined;
+		if (!url) return [];
+		const title = typeof result?.title === "string" ? result.title : undefined;
+		const excerpts = Array.isArray(result?.excerpts)
+			? result.excerpts.filter((value): value is string => typeof value === "string")
+			: [];
+		const published = toIsoDate(result?.publish_date);
+		return [
+			{
+				url,
+				...(title ? { title } : {}),
+				...(excerpts.length ? { content: excerpts.join("\n\n") } : {}),
+				...(published ? { published } : {}),
+			},
+		];
+	});
+}
+
+export function parseFirecrawlResults(text: string): WebSearchResult[] {
+	const data = getRecord(getRecord(safeJson(text))?.data);
+	const web = data?.web;
+	if (!Array.isArray(web)) return [];
+	return web.flatMap((item) => {
+		const result = getRecord(item);
+		const url = typeof result?.url === "string" ? result.url : undefined;
+		if (!url) return [];
+		const title = typeof result?.title === "string" ? result.title : undefined;
+		const content = typeof result?.description === "string" ? result.description : undefined;
+		return [{ url, ...(title ? { title } : {}), ...(content ? { content } : {}) }];
+	});
+}
+
+export function parseTavilyResults(payload: unknown): WebSearchResult[] {
+	const results = getRecord(payload)?.results;
+	if (!Array.isArray(results)) return [];
+	return results.flatMap((item) => {
+		const result = getRecord(item);
+		const url = typeof result?.url === "string" ? result.url : undefined;
+		if (!url) return [];
+		const title = typeof result?.title === "string" ? result.title : undefined;
+		const content = typeof result?.content === "string" ? result.content : undefined;
+		return [{ url, ...(title ? { title } : {}), ...(content ? { content } : {}) }];
+	});
+}
+
+export function parseTinyfishResults(text: string): WebSearchResult[] {
+	const results = getRecord(safeJson(text))?.results;
+	if (!Array.isArray(results)) return [];
+	return results.flatMap((item) => {
+		const result = getRecord(item);
+		const url = typeof result?.url === "string" ? result.url : undefined;
+		if (!url) return [];
+		const title = typeof result?.title === "string" ? result.title : undefined;
+		const content = typeof result?.snippet === "string" ? result.snippet : undefined;
+		return [{ url, ...(title ? { title } : {}), ...(content ? { content } : {}) }];
+	});
+}
+
+export function formatResultsMarkdown(results: readonly WebSearchResult[]): string {
+	if (results.length === 0) return NO_RESULTS;
+	return results
+		.map((result) => {
+			const title = result.title ?? result.url;
+			const published = result.published ? `\nPublished: ${result.published}` : "";
+			return `## [${title}](${result.url})${published}${result.content ? `\n\n${result.content}` : ""}`;
+		})
+		.join("\n\n");
+}
+
+export interface SearchOutputLimits {
+	maxLines: number;
+	maxBytes: number;
+	sizeLabel: string;
+}
+
+interface TruncationResult {
+	content: string;
+	truncated: boolean;
+}
+
+// Format first, then let the caller's truncate guard cap the final text.
+export function buildSearchOutput(
+	output: string,
+	truncate: (
+		text: string,
+		options: { maxLines: number; maxBytes: number },
+	) => TruncationResult,
+	limits: SearchOutputLimits,
+): { text: string; truncated: boolean } {
+	const truncation = truncate(output, {
+		maxLines: limits.maxLines,
+		maxBytes: limits.maxBytes,
+	});
+	const text = truncation.truncated
+		? [
+				truncation.content,
+				`[Search output truncated at ${limits.sizeLabel} or ${limits.maxLines} lines.]`,
+		  ]
+				.filter(Boolean)
+				.join("\n\n")
+		: truncation.content;
+	return { text, truncated: truncation.truncated };
+}
+
+function mcpFallback(result: Record<string, unknown> | undefined, results: WebSearchResult[]): string {
+	if (results.length > 0) return formatResultsMarkdown(results);
+	return getMcpTextFromResult(result) ?? NO_RESULTS;
+}
+
+export async function searchExa(query: string, options: WebSearchOptions = {}): Promise<string> {
+	const request = buildExaRequest(query, options.apiKey);
+	const { body } = await fetchText("Exa web search", request, options);
+	const result = parseMcpResult(body, EXA_REQUEST_ID);
+	const text = getMcpTextFromResult(result);
+	return mcpFallback(result, text ? parseExaResults(text) : []);
+}
+
+export async function searchParallel(query: string, options: WebSearchOptions = {}): Promise<string> {
+	const request = buildParallelRequest(query, options.apiKey);
+	const { body } = await fetchText("Parallel web search", request, options);
+	const result = parseMcpResult(body, EXA_REQUEST_ID);
+	const structured = result?.structuredContent;
+	return mcpFallback(result, parseParallelResults(structured));
+}
+
+export async function searchFirecrawl(query: string, options: WebSearchOptions = {}): Promise<string> {
+	const request = buildFirecrawlRequest(query, options.apiKey);
+	const { body } = await fetchText("Firecrawl web search", request, options);
+	const result = parseMcpResult(body, EXA_REQUEST_ID);
+	const text = getMcpTextFromResult(result);
+	return mcpFallback(result, text ? parseFirecrawlResults(text) : []);
+}
+
+export async function searchTavily(query: string, options: WebSearchOptions = {}): Promise<string> {
+	const request = buildTavilyRequest(query, options.apiKey);
+	const { body } = await fetchText("Tavily web search", request, options);
+	const payload = safeJson(body);
+	if (payload === undefined) throw new Error("Tavily web search returned invalid JSON");
+	return formatResultsMarkdown(parseTavilyResults(payload));
+}
+
+export async function initializeTinyfish(options: WebSearchOptions = {}): Promise<string> {
+	const apiKey = options.apiKey ?? process.env.TINYFISH_API_KEY;
+	if (!apiKey?.trim()) throw new Error("TinyFish API key required for initialize");
+
+	const { response } = await fetchText(
+		"TinyFish initialize",
+		buildTinyfishInitializeRequest(apiKey),
+		options,
+	);
+	const sessionId = readHeader(response, "mcp-session-id");
+	if (!sessionId) {
+		throw new Error("TinyFish MCP initialize did not return an Mcp-Session-Id header");
+	}
+
+	await fetchText(
+		"TinyFish initialize",
+		buildTinyfishInitializedNotification(sessionId, apiKey),
+		options,
+	);
+	return sessionId;
+}
+
+export async function searchTinyfish(query: string, options: WebSearchOptions = {}): Promise<string> {
+	const apiKey = options.apiKey ?? process.env.TINYFISH_API_KEY;
+	const sessionId = apiKey?.trim() ? await initializeTinyfish({ ...options, apiKey }) : undefined;
+	const request = buildTinyfishRequest(query, { apiKey, sessionId });
+	const { body } = await fetchText("TinyFish web search", request, options);
+	const result = parseMcpResult(body, EXA_REQUEST_ID);
+	const text = getMcpTextFromResult(result);
+	return mcpFallback(result, text ? parseTinyfishResults(text) : []);
 }

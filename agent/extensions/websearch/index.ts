@@ -7,10 +7,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
+	buildSearchOutput,
 	searchExa,
+	searchFirecrawl,
 	searchParallel,
-	selectWebSearchProvider,
-	webSearchModelName,
+	searchTavily,
+	searchTinyfish,
+	searchWithFallback,
 	type WebSearchProvider,
 } from "./src/mcp";
 
@@ -25,6 +28,26 @@ interface WebSearchDetails {
 	provider: WebSearchProvider;
 	query: string;
 	truncated: boolean;
+}
+
+function callProvider(
+	provider: WebSearchProvider,
+	query: string,
+	signal?: AbortSignal,
+): Promise<string> {
+	const options = { signal };
+	switch (provider) {
+		case "exa":
+			return searchExa(query, options);
+		case "parallel":
+			return searchParallel(query, options);
+		case "firecrawl":
+			return searchFirecrawl(query, options);
+		case "tavily":
+			return searchTavily(query, options);
+		case "tinyfish":
+			return searchTinyfish(query, options);
+	}
 }
 
 export default function (pi: ExtensionAPI) {
@@ -45,52 +68,25 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const sessionId = ctx?.sessionManager?.getSessionId?.() ?? "";
-			const modelName = webSearchModelName((ctx as unknown as { model?: unknown })?.model);
-			const primary = selectWebSearchProvider(sessionId);
-			const fallback: WebSearchProvider = primary === "exa" ? "parallel" : "exa";
+			const { provider, output } = await searchWithFallback(
+				query,
+				sessionId,
+				(selected) => callProvider(selected, query, signal),
+				signal,
+			);
 
-			let rawOutput: string;
-			let usedProvider: WebSearchProvider;
-
-			const callProvider = (provider: WebSearchProvider) => {
-				if (provider === "exa") return searchExa(query, { signal });
-				return searchParallel(query, { signal, sessionId, modelName });
-			};
-
-			try {
-				rawOutput = await callProvider(primary);
-				usedProvider = primary;
-			} catch (primaryError) {
-				// Don't fallback on user abort.
-				if (signal?.aborted) throw primaryError;
-				const msg = primaryError instanceof Error ? primaryError.message : String(primaryError);
-				if (/aborted/i.test(msg) && signal?.aborted) throw primaryError;
-				try {
-					rawOutput = await callProvider(fallback);
-					usedProvider = fallback;
-				} catch {
-					throw primaryError;
-				}
-			}
-			const truncation = truncateHead(rawOutput, {
+			const { text, truncated } = buildSearchOutput(output, truncateHead, {
 				maxLines: DEFAULT_MAX_LINES,
 				maxBytes: DEFAULT_MAX_BYTES,
+				sizeLabel: formatSize(DEFAULT_MAX_BYTES),
 			});
-			const text = truncation.truncated
-				? [
-						truncation.content,
-						`[Search output truncated at ${formatSize(DEFAULT_MAX_BYTES)} or ${DEFAULT_MAX_LINES} lines.]`,
-				  ]
-						.filter(Boolean)
-						.join("\n\n")
-				: truncation.content;
 
 			return {
 				content: [{ type: "text", text }],
 				details: {
-					provider: usedProvider,
+					provider,
 					query,
-					truncated: truncation.truncated,
+					truncated,
 				} satisfies WebSearchDetails,
 			};
 		},
