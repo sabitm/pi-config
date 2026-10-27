@@ -37,7 +37,7 @@
         },
         {
           "id": "subagent-2",
-          "maxTokens": 65536,
+          "maxTokens": 131072,
           "contextWindow": 300000,
           "input": [ "text", "image" ],
           "compat": {
