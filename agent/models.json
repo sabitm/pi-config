@@ -26,6 +26,16 @@
           }
         },
         {
+          "id": "default-3",
+          "maxTokens": 65536,
+          "contextWindow": 300000,
+          "input": [ "text", "image" ],
+          "compat": {
+            "sendSessionAffinityHeaders": true,
+            "sessionAffinityFormat": "openai"
+          }
+        },
+        {
           "id": "subagent",
           "maxTokens": 65536,
           "contextWindow": 300000,
