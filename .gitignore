@@ -2,3 +2,5 @@
 /agent/sessions
 /agent/trust.json
 /agent/auth.json
+/agent/bin
+/agent/install
