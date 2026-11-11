@@ -1,6 +1,6 @@
 # Plan
 
-Status values: todo, doing, done, blocked.
+Status values: todo, doing, waiting, done, blocked.
 
 ## Milestones
 | Id | Milestone | Serves | Status | Verify |
@@ -13,5 +13,5 @@ Side issues found during work. Do not fix unless the user asks.
 - <issue> (found in <file or step>)
 
 ## Archive
-Completed milestones with their verification results.
-- M0 <name>: done <YYYY-MM-DD>, verified by `<command>` -> <result>
+One line per completed milestone, at most 200 characters. Details live in EVIDENCE.md.
+- M0 <name>: done <YYYY-MM-DD>, <result in a few words> (E<n>)

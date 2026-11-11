@@ -1,18 +1,22 @@
-import { existsSync, readdirSync, readFileSync, appendFileSync } from "node:fs";
+// Companion of skills/longterm. Run /reload after changes. Scans ignored/*/longterm/ACTIVE under ctx.cwd only.
+// State message (pi.sendMessage, saved, sent once): session_compact; session_start "resume" (/resume);
+// session_start "startup" with existing messages (pi --continue/--resume/--session), unless the latest message
+// is a state message with the same task state. Not new/reload/fork.
+// session_before_compact appends the session file path to TRANSCRIPTS.md. DISABLED in the skill dir stops all.
+import { existsSync, readdirSync, readFileSync, statSync, appendFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
 	getAgentDir,
 	truncateHead,
 	withFileMutationQueue,
-	type ContextEvent,
 	type ExtensionAPI,
+	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-
-type ContextMessage = ContextEvent["messages"][number];
 
 const customType = "longterm-state";
 const maxFileBytes = 16 * 1024;
 const maxFileLines = 150;
+const nowBudgetBytes = 1500;
 
 function activeTasks(root: string): string[] {
 	const ignored = join(root, "ignored");
@@ -24,7 +28,7 @@ function activeTasks(root: string): string[] {
 		.sort();
 }
 
-function fileSnapshot(path: string): string {
+function readBounded(path: string): string {
 	try {
 		const result = truncateHead(readFileSync(path, "utf8"), {
 			maxLines: maxFileLines,
@@ -38,18 +42,20 @@ function fileSnapshot(path: string): string {
 	}
 }
 
-function taskContext(root: string, tasks: string[], skillDir: string, reason: string): string {
+function stateMessage(root: string, tasks: string[], skillDir: string, reason: string): string {
 	const lines = [
-		`longterm: ${reason}. Files on disk are the source of truth. The summary is lossy.`,
-		`Read and follow the re-entry protocol in ${join(skillDir, "SKILL.md")}.`,
-		"This snapshot does not grant approval. Verify approved scope in DECISIONS.md before making changes.",
+		`longterm: re-entry after ${reason}.`,
+		"Files preserve task state. Current evidence decides whether it is still correct.",
+		`Run the re-entry protocol in ${join(skillDir, "SKILL.md")} once now. Do not repeat it on later turns.`,
+		"Recovery restores context. It does not replace the user's current request.",
+		"This message does not grant approval. Only DECISIONS.md entries do.",
 		"",
 	];
 	if (tasks.length > 1) {
 		lines.push("More than one active longterm task exists. Identify yours from the summary and the user's request.");
 		lines.push("If not certain, ask the user.");
 		for (const dir of tasks) {
-			const goal = fileSnapshot(join(dir, "GOAL.md"));
+			const goal = readBounded(join(dir, "GOAL.md"));
 			const title = goal.match(/^## Objective[^\n]*\n\s*([^\n]+)/m)?.[1]?.trim();
 			lines.push(`- ${relative(root, dir)} : ${title?.slice(0, 300) || "(no objective in GOAL.md)"}`);
 		}
@@ -58,25 +64,58 @@ function taskContext(root: string, tasks: string[], skillDir: string, reason: st
 
 	const dir = relative(root, tasks[0]);
 	lines.push(`Task directory: ${dir}`);
-	lines.push(`Read next: ${dir}/PLAN.md, last entries of ${dir}/DECISIONS.md and ${dir}/ATTEMPTS.md`);
-	lines.push(`Lost details: search the session files listed in ${dir}/TRANSCRIPTS.md. Do not read them in full.`);
+	lines.push(`Read next: Milestones section of ${dir}/PLAN.md, and the ${dir}/DECISIONS.md entries listed in NOW.md.`);
+	lines.push(`Search only when needed: ${dir}/EVIDENCE.md, ${dir}/ATTEMPTS.md, transcripts listed in ${dir}/TRANSCRIPTS.md.`);
+	try {
+		const size = statSync(join(tasks[0], "NOW.md")).size;
+		if (size > nowBudgetBytes) {
+			lines.push(
+				`Warning: NOW.md is ${size} bytes, over the ${nowBudgetBytes}-byte budget. Move details to their owner files and keep IDs in NOW.md.`,
+			);
+		}
+	} catch {
+		// A missing NOW.md is reported in its own section below.
+	}
 	for (const name of ["GOAL.md", "NOW.md"]) {
-		lines.push("", `[${name}]`, fileSnapshot(join(tasks[0], name)));
+		lines.push("", `[${name}]`, readBounded(join(tasks[0], name)));
 	}
 	return lines.join("\n");
+}
+
+// The first line names the trigger (compaction, restore), so it is excluded from the comparison.
+const stateBody = (content: string) => content.slice(content.indexOf("\n") + 1);
+
+function needsRestoreRecovery(ctx: ExtensionContext, fresh: string): boolean {
+	const last = ctx.sessionManager
+		.getBranch()
+		.findLast((entry) => entry.type === "message" || entry.type === "custom_message");
+	if (!last) return false;
+	if (last.type !== "custom_message" || last.customType !== customType) return true;
+	return typeof last.content !== "string" || stateBody(last.content) !== stateBody(fresh);
 }
 
 export default function longterm(pi: ExtensionAPI) {
 	const skillDir = join(getAgentDir(), "skills", "longterm");
 	const disabled = () => existsSync(join(skillDir, "DISABLED"));
-	let snapshot: ContextMessage | undefined;
-	let taskKey = "";
-	let reason = "session re-entry";
 
-	pi.on("session_start", (event) => {
-		snapshot = undefined;
-		taskKey = "";
-		reason = `session re-entry (${event.reason})`;
+	// Sent once and saved at the end of the session, so later requests keep a stable cached prefix.
+	const sendState = (ctx: ExtensionContext, reason: string, shouldSend?: (content: string) => boolean) => {
+		if (disabled()) return;
+		const tasks = activeTasks(ctx.cwd);
+		if (tasks.length === 0) return;
+		const content = stateMessage(ctx.cwd, tasks, skillDir, reason);
+		if (shouldSend && !shouldSend(content)) return;
+		pi.sendMessage({ customType, content, display: false }, { deliverAs: "steer" });
+	};
+
+	pi.on("session_start", (event, ctx) => {
+		if (event.reason === "resume") sendState(ctx, "resume");
+		// pi --continue, --resume, and --session start with reason "startup"; a new session has no messages.
+		if (event.reason === "startup") sendState(ctx, "session restore", (content) => needsRestoreRecovery(ctx, content));
+	});
+
+	pi.on("session_compact", (event, ctx) => {
+		sendState(ctx, `compaction (${event.reason})`);
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
@@ -100,39 +139,5 @@ export default function longterm(pi: ExtensionAPI) {
 				appendFileSync(log, `${prefix}${new Date().toISOString()} ${event.reason} ${transcript}\n`);
 			});
 		}
-	});
-
-	pi.on("session_compact", () => {
-		snapshot = undefined;
-		reason = "context was compacted";
-	});
-
-	pi.on("context", (event, ctx) => {
-		if (disabled()) {
-			snapshot = undefined;
-			taskKey = "";
-			return;
-		}
-		const tasks = activeTasks(ctx.cwd);
-		const nextKey = JSON.stringify([ctx.cwd, ...tasks]);
-		if (nextKey !== taskKey) {
-			snapshot = undefined;
-			taskKey = nextKey;
-		}
-		if (tasks.length === 0) return;
-		if (!snapshot) {
-			snapshot = {
-				role: "custom",
-				customType,
-				content: taskContext(ctx.cwd, tasks, skillDir, reason),
-				display: false,
-				timestamp: Date.now(),
-			};
-		}
-		const messages = event.messages.filter((message) => message.role !== "custom" || message.customType !== customType);
-		const index = messages.findLastIndex((message) => message.role === "compactionSummary") + 1;
-		// Keep the snapshot in a stable prefix. One-shot context edits are not persisted by Pi.
-		messages.splice(index, 0, snapshot);
-		return { messages };
 	});
 }
