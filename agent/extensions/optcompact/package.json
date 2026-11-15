@@ -1,0 +1,7 @@
+{
+	"name": "optcompact",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Compaction as an index of summarized rows that the agent can zoom into and pin"
+}
