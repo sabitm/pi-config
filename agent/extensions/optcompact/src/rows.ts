@@ -280,11 +280,12 @@ export interface MergeJob {
 const mergeShrink = 0.6;
 
 // One round: pick disjoint adjacent pairs, shallowest first and then oldest, until the estimate fits the budget.
-export function selectMerges(state: State, pinned: Set<string>, budgetTokens: number): MergeJob[] {
+// Pinned rows merge too. The Pinned section shows the pinned node itself, which a merge does not rewrite.
+export function selectMerges(state: State, budgetTokens: number): MergeJob[] {
 	let estimate = rowTokens(state.nodes);
 	const used = new Set<number>();
 	const jobs: MergeJob[] = [];
-	const mergeable = (node: RowNode) => !node.partial && !pinned.has(labelOf(node));
+	const mergeable = (node: RowNode) => !node.partial;
 	while (estimate > budgetTokens) {
 		let best = -1;
 		let bestDepth = Infinity;

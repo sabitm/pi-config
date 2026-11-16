@@ -171,25 +171,25 @@ describe("leaves", () => {
 
 describe("merges", () => {
 	test("no merge when under budget", () => {
-		expect(selectMerges(stateOf([leaf(1), leaf(2)]), new Set(), 10000)).toEqual([]);
+		expect(selectMerges(stateOf([leaf(1), leaf(2)]), 10000)).toEqual([]);
 	});
 
-	test("merges the oldest shallow pair first and skips pinned and partial nodes", () => {
+	test("merges the oldest shallow pair first and skips partial nodes", () => {
 		const state = stateOf([leaf(1), leaf(2), leaf(3), leaf(4), { ...leaf(5), partial: true }]);
-		const jobs = selectMerges(state, new Set(["#1"]), 300);
-		expect(jobs.map((job) => [labelOf(job.a), labelOf(job.b)])).toEqual([["#2", "#3"]]);
+		const jobs = selectMerges(state, 300);
+		expect(jobs.map((job) => [labelOf(job.a), labelOf(job.b)])).toEqual([["#1", "#2"], ["#3", "#4"]]);
 	});
 
 	test("prefers leaf pairs over pairs with a group", () => {
 		const group: RowNode = { ...leaf(1), hi: 2, lastEntryId: "e2b", children: [leaf(1), leaf(2)] };
 		const state = stateOf([group, leaf(3), leaf(4), leaf(5)]);
-		const jobs = selectMerges(state, new Set(), 400);
+		const jobs = selectMerges(state, 400);
 		expect(labelOf(jobs[0].a)).toBe("#3");
 	});
 
 	test("commitMerges replaces the pair with a parent node", () => {
 		const state = stateOf([leaf(1), leaf(2), leaf(3)]);
-		const jobs = selectMerges(state, new Set(), 250);
+		const jobs = selectMerges(state, 250);
 		const next = commitMerges(state, jobs, summariesFor(jobs.map((job) => job.key)));
 		expect(next.nodes.map(labelOf)).toEqual(["#1-2", "#3"]);
 		expect(next.nodes[0].firstEntryId).toBe("e1a");

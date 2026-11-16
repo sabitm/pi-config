@@ -107,16 +107,18 @@ export function renderSummary(state: State, pins: Pin[]): string {
 	if (pins.length === 0) sections.push("(none)");
 	else
 		sections.push(
-			pins
-				.map((pin) =>
+			[
+				"Unpin a row when its reason no longer applies, for example when the approved work is finished.",
+				...pins.map((pin) =>
 					pin.node
 						? `- ${pin.label}: ${oneLine(pin.node.summary)}\n  Pinned because: ${oneLine(pin.reason)}`
 						: `- ${pin.label} (not yet summarized, in the messages below)\n  Pinned because: ${oneLine(pin.reason)}`,
-				)
-				.join("\n"),
+				),
+			].join("\n"),
 		);
 	sections.push("## Rows");
-	const pinned = new Set(pins.filter((pin) => pin.node).map((pin) => pin.label));
+	const pinnedNodes = pins.flatMap((pin) => (pin.node ? [pin.node] : []));
+	const pinned = new Set(pinnedNodes.map(labelOf));
 	if (state.nodes.length === 0) sections.push("(none)");
 	else
 		sections.push(
@@ -124,7 +126,15 @@ export function renderSummary(state: State, pins: Pin[]): string {
 				.map((node) => {
 					const label = labelOf(node);
 					const body = pinned.has(label) ? "(pinned, see Pinned above)" : oneLine(node.summary);
-					return `- ${label}${node.partial ? " (continues in the messages below)" : ""}: ${body}`;
+					const inside = pinnedNodes
+						.filter((pin) => pin.lo >= node.lo && pin.hi <= node.hi)
+						.map(labelOf)
+						.filter((pin) => pin !== label);
+					const notes = [
+						...(inside.length > 0 ? [`contains pinned ${inside.join(", ")}`] : []),
+						...(node.partial ? ["continues in the messages below"] : []),
+					];
+					return `- ${label}${notes.length > 0 ? ` (${notes.join("; ")})` : ""}: ${body}`;
 				})
 				.join("\n"),
 		);

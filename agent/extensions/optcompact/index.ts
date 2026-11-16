@@ -50,7 +50,7 @@ import {
 
 const pinType = "optcompact-pin";
 const rowBudgetTokens = 8000;
-const pinCapTokens = 2000;
+const pinCapTokens = 4000;
 const zoomPageChars = 20000;
 const toolResultMaxChars = 2000;
 const maxMergeRounds = 4;
@@ -186,10 +186,9 @@ export async function compactRows(event: SessionBeforeCompactEvent, ctx: Extensi
 	let state = addFileOps(replacePendingIds(commitLeaves(prior, jobs, summaries, goalNow), index), fileOps, ctx.sessionManager.getCwd());
 
 	const events = pinEvents(branch);
-	const pinned = new Set(resolvePins(events, state, index).map((pin) => pin.label));
 	let merges = 0;
 	for (let round = 0; round < maxMergeRounds; round++) {
-		const mergeJobs = selectMerges(state, pinned, rowBudgetTokens);
+		const mergeJobs = selectMerges(state, rowBudgetTokens);
 		if (mergeJobs.length === 0) break;
 		const keys = mergeJobs.map((job) => job.key);
 		const result = await completeJson(complete, mergePrompt(mergeJobs), (text) => parseMergeResponse(text, keys), signal);
@@ -326,7 +325,7 @@ export default function optcompact(pi: ExtensionAPI) {
 		promptSnippet: "Pin a compaction row so that its summary always stays visible",
 		promptGuidelines: [
 			"Use pin when the user states a rule, constraint, or decision that must apply for the rest of the task.",
-			"Use unpin when a pinned row is no longer true or no longer needed.",
+			"Use unpin when a pinned row's reason no longer applies, for example when the approved work is finished.",
 		],
 		parameters: Type.Object({
 			id: Type.Optional(Type.String({ description: 'Row ID, for example "#12". Empty means the current user request.' })),

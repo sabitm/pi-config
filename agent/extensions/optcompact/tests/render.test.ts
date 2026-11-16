@@ -52,6 +52,23 @@ describe("renderSummary", () => {
 		expect(text.match(/full text/g)?.length).toBe(1);
 	});
 
+	test("Pinned starts with the unpin reminder only when pins exist", () => {
+		const state = { ...emptyState(), nodes: [leaf(1, "a")] };
+		expect(renderSummary(state, [])).not.toContain("Unpin a row");
+		const text = renderSummary(state, [{ label: "#1", reason: "rule", node: state.nodes[0] }]);
+		expect(text).toContain("## Pinned\n\nUnpin a row when its reason no longer applies");
+	});
+
+	test("a group that contains a pinned row keeps its summary and names the pin", () => {
+		const children: [RowNode, RowNode] = [leaf(1, "pinned detail"), leaf(2, "other")];
+		const group: RowNode = { lo: 1, hi: 2, firstEntryId: "a1", lastEntryId: "b2", summary: "merged", children };
+		const state = { ...emptyState(), nodes: [group, { ...leaf(3, "doing"), partial: true }] };
+		const text = renderSummary(state, [{ label: "#1", reason: "rule", node: children[0] }]);
+		expect(text).toContain("- #1: pinned detail\n  Pinned because: rule");
+		expect(text).toContain("- #1-2 (contains pinned #1): merged");
+		expect(text).toContain("- #3 (continues in the messages below): doing");
+	});
+
 	test("ends with sorted file lists, read-only files exclude modified files", () => {
 		const state = addFileOps(emptyState(), [
 			{ path: "b.ts", modified: false },
