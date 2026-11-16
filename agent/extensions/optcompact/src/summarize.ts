@@ -1,6 +1,6 @@
 // LLM prompts and JSON parsing for row summaries and rollup merges.
 import type { Usage } from "@earendil-works/pi-ai";
-import type { LeafJob, MergeJob } from "./rows.ts";
+import { type LeafJob, type MergeJob, mergeShrink } from "./rows.ts";
 
 export const systemPrompt = [
 	"You summarize parts of a conversation between a user and an AI coding agent.",
@@ -9,9 +9,22 @@ export const systemPrompt = [
 
 export type Complete = (system: string, user: string) => Promise<{ text: string; usage?: Usage }>;
 
-const leafMaxChars = 400;
-const mergeMaxChars = 600;
+const summaryMinChars = 400;
+const mergeMinChars = 600;
+const summaryMaxChars = 2000;
 const goalNowMaxChars = 1500;
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value)));
+
+// About 1 summary character for each 100 message characters. A continued row does not shrink.
+export function leafLimit(job: LeafJob): number {
+	const limit = clamp(jobText(job).length / 100, summaryMinChars, summaryMaxChars);
+	return Math.max(limit, Math.min(job.extend?.summary.length ?? 0, summaryMaxChars));
+}
+
+export function mergeLimit(job: MergeJob): number {
+	return clamp(mergeShrink * (job.a.summary.length + job.b.summary.length), mergeMinChars, summaryMaxChars);
+}
 
 export function jobText(job: LeafJob): string {
 	return job.group.texts.filter(Boolean).join("\n\n");
@@ -47,8 +60,9 @@ export function leafPrompt(jobs: LeafJob[], goalNow: string, maxChars: number, c
 		"Write a summary for each row below. A row is one user request and the agent work that followed it.",
 		"",
 		"Rules for a row summary:",
-		`- Use 1 to 4 sentences and at most ${leafMaxChars} characters.`,
+		"- Use at most the max-chars value of the row. Larger rows have more space. Do not pad short rows.",
 		"- State the user request, the result, and the key facts: decisions, constraints, file paths, IDs, errors, and numbers.",
+		"- Use the space for exact values (versions, hashes, seeds, counts, file paths) and for the reasons for decisions.",
 		"- If a row has a previous summary, the row continues. Write one summary that covers the previous summary and the new messages.",
 		"- Write only facts that are in the messages.",
 		"- Do not copy IDs that start with pending:. They are temporary.",
@@ -72,7 +86,7 @@ export function leafPrompt(jobs: LeafJob[], goalNow: string, maxChars: number, c
 		"</goal-now>",
 	);
 	for (const job of jobs) {
-		lines.push("", `<row key="${job.key}">`);
+		lines.push("", `<row key="${job.key}" max-chars="${leafLimit(job)}">`);
 		if (job.extend) lines.push("<previous-summary>", job.extend.summary, "</previous-summary>");
 		lines.push("<messages>", clipMiddle(jobText(job), maxChars), "</messages>", "</row>");
 	}
@@ -82,14 +96,14 @@ export function leafPrompt(jobs: LeafJob[], goalNow: string, maxChars: number, c
 export function mergePrompt(jobs: MergeJob[]): string {
 	const lines = [
 		"Each item below has two summaries of consecutive parts of a conversation, A and then B.",
-		`For each item, write one summary that covers both. Use at most ${mergeMaxChars} characters.`,
-		"Keep decisions, constraints, file paths, IDs, and results. Leave out details that the later part made obsolete.",
+		"For each item, write one summary that covers both. Use at most the max-chars value of the item.",
+		"Keep decisions, constraints, exact values, file paths, IDs, and results. Leave out details that the later part made obsolete.",
 		"",
 		"Output exactly one JSON object and nothing else, in this format:",
 		`{"nodes": {${jobs.map((job) => `"${job.key}": "summary"`).join(", ")}}}`,
 	];
 	for (const job of jobs) {
-		lines.push("", `<item key="${job.key}">`, "<a>", job.a.summary, "</a>", "<b>", job.b.summary, "</b>", "</item>");
+		lines.push("", `<item key="${job.key}" max-chars="${mergeLimit(job)}">`, "<a>", job.a.summary, "</a>", "<b>", job.b.summary, "</b>", "</item>");
 	}
 	return lines.join("\n");
 }

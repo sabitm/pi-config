@@ -1,0 +1,42 @@
+import { describe, expect, test } from "bun:test";
+import type { LeafJob, MergeJob, RowNode } from "../src/rows.ts";
+import { leafLimit, leafPrompt, mergeLimit, mergePrompt } from "../src/summarize.ts";
+
+const node = (n: number, summary: string): RowNode => ({ lo: n, hi: n, firstEntryId: `a${n}`, lastEntryId: `b${n}`, summary });
+
+const job = (chars: number, extend?: RowNode): LeafJob => ({
+	key: "r1",
+	group: { firstEntryId: "a1", lastEntryId: "b1", texts: ["x".repeat(chars)], continues: Boolean(extend), partial: false },
+	extend,
+});
+
+const merge = (a: number, b: number): MergeJob => ({ key: "m1", a: node(1, "x".repeat(a)), b: node(2, "x".repeat(b)) });
+
+describe("leafLimit", () => {
+	test("scales with the row size between the floor and the cap", () => {
+		expect(leafLimit(job(5000))).toBe(400);
+		expect(leafLimit(job(64000))).toBe(640);
+		expect(leafLimit(job(300000))).toBe(2000);
+	});
+
+	test("a continued row keeps at least the length of its previous summary", () => {
+		expect(leafLimit(job(5000, node(1, "x".repeat(1200))))).toBe(1200);
+		expect(leafLimit(job(5000, node(1, "x".repeat(3000))))).toBe(2000);
+		expect(leafLimit(job(150000, node(1, "x".repeat(500))))).toBe(1500);
+	});
+});
+
+describe("mergeLimit", () => {
+	test("is 60% of both summaries between the floor and the cap", () => {
+		expect(mergeLimit(merge(400, 400))).toBe(600);
+		expect(mergeLimit(merge(1000, 1000))).toBe(1200);
+		expect(mergeLimit(merge(2000, 2000))).toBe(2000);
+	});
+});
+
+describe("prompts", () => {
+	test("each row and each merge item states its limit", () => {
+		expect(leafPrompt([job(64000)], "", 1000000)).toContain('<row key="r1" max-chars="640">');
+		expect(mergePrompt([merge(1000, 1000)])).toContain('<item key="m1" max-chars="1200">');
+	});
+});

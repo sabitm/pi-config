@@ -277,7 +277,7 @@ export interface MergeJob {
 }
 
 // A merged summary is expected to be about 60% of its two children combined.
-const mergeShrink = 0.6;
+export const mergeShrink = 0.6;
 
 // One round: pick disjoint adjacent pairs, shallowest first and then oldest, until the estimate fits the budget.
 // Pinned rows merge too. The Pinned section shows the pinned node itself, which a merge does not rewrite.
