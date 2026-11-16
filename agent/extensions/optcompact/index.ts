@@ -107,7 +107,7 @@ function pinEvents(branch: SessionEntry[]): PinEvent[] {
 
 const branchIndex = (branch: SessionEntry[]) => new Map(branch.map((entry, i) => [entry.id, i]));
 
-async function compactRows(event: SessionBeforeCompactEvent, ctx: ExtensionContext) {
+export async function compactRows(event: SessionBeforeCompactEvent, ctx: ExtensionContext) {
 	const model = ctx.model;
 	if (!model) throw new Error("no active model");
 	const { preparation, signal } = event;
@@ -259,7 +259,7 @@ function unpinRow(pi: ExtensionAPI, ctx: ExtensionContext, raw: string | undefin
 	return `Unpinned ${label}.`;
 }
 
-function zoom(ctx: ExtensionContext, raw: string, page: number): string {
+export function zoom(ctx: ExtensionContext, raw: string, page: number): string {
 	const branch = ctx.sessionManager.getBranch();
 	const state = latestState(branch);
 	if (!state) throw new Error("This branch has no optcompact summary yet.");
