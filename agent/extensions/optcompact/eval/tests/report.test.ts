@@ -64,6 +64,10 @@ describe("answers and grades", () => {
 		expect(exactHit(q("a", "e1", { mustContain: ["abc", "def"] }), "abc only")).toBe(false);
 	});
 
+	test("exactHit ignores letter case", () => {
+		expect(exactHit(q("a", "e1", { mustContain: ["mainnet"] }), "Mainnet only.")).toBe(true);
+	});
+
 	test("renderContext shows the summary and the kept messages", () => {
 		const text = renderContext([
 			{ role: "system", content: "hidden" },
@@ -96,5 +100,21 @@ describe("renderReport", () => {
 		expect(summaryRow.split(/\s{2,}/)).toEqual(["m", "4", "38%", "1", "1", "1", "1", "-", "100", "10", "2"]);
 		expect(text).toContain("Control: questions visible in the kept messages:");
 		expect(text.split("\n").at(-1)!.split(/\s{2,}/)).toEqual(["m", "1", "0%"]);
+		expect(text).not.toContain("Rollup by cut point");
+	});
+
+	test("shows rows and groups for methods that have them", () => {
+		const base = { repeat: 1, summaryChars: 1, compactionTokens: 1, answerTokens: 1, zoomCalls: 0 };
+		const text = renderReport(
+			[],
+			[
+				{ ...base, method: "rows", point: 1, topRows: 7, groups: 0 },
+				{ ...base, method: "rows", point: 2, topRows: 9, groups: 3 },
+				{ ...base, method: "plain", point: 1 },
+			],
+		);
+		const sections = text.split("\n\n");
+		const at = sections.indexOf("Rollup by cut point (top-level rows/groups, first run):");
+		expect(sections[at + 1].split("\n").slice(1)).toEqual(["rows    7/0  9/3"]);
 	});
 });

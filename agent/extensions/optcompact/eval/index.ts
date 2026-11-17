@@ -15,6 +15,7 @@ import {
 import { Type } from "typebox";
 import { compactRows, zoom } from "../index.ts";
 import { fileOpsOf } from "../src/render.ts";
+import { parseState, walk } from "../src/rows.ts";
 import { addUsage, completeJson, type Complete } from "../src/summarize.ts";
 import {
 	answerSystemPrompt,
@@ -94,7 +95,21 @@ const textOf = (message: { content: { type: string; text?: string }[] }) =>
 		.map((part) => part.text ?? "")
 		.join("\n");
 
-async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSignal) {
+function rollupOf(details: unknown): { topRows?: number; groups?: number } {
+	const state = parseState(details);
+	if (!state) return {};
+	let groups = 0;
+	for (const node of walk(state.nodes)) if (node.children) groups++;
+	return { topRows: state.nodes.length, groups };
+}
+
+interface Results {
+	answers: AnswerRecord[];
+	pointRecords: PointRecord[];
+	errors: string[];
+}
+
+async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSignal, onRun: (results: Results, runs: number) => void) {
 	const model = ctx.model;
 	if (!model) throw new Error("no active model");
 	const session: Session = loadSession(readFileSync(options.session, "utf8"));
@@ -228,6 +243,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 						compactionTokens: result.usage?.totalTokens ?? 0,
 						answerTokens: 0,
 						zoomCalls: 0,
+						...rollupOf(result.details),
 					};
 					pointRecords.push(record);
 					if (asked.length === 0) continue;
@@ -277,8 +293,8 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 				}
 			}
 		}
+		onRun({ answers, pointRecords, errors }, repeat);
 	}
-	return { answers, pointRecords, errors };
 }
 
 export default function optcompactEval(pi: ExtensionAPI) {
@@ -288,20 +304,25 @@ export default function optcompactEval(pi: ExtensionAPI) {
 			try {
 				const options = parseArgs(args, ctx.cwd);
 				const started = Date.now();
-				const { answers, pointRecords, errors } = await runEval(options, ctx, new AbortController().signal);
-				const report = [
-					`Session: ${options.session}`,
-					`Questions: ${options.questions}`,
-					`Model: ${ctx.model?.provider}/${ctx.model?.id}. Methods: ${options.methods.join(", ")}. Runs: ${options.repeat}. Minutes: ${((Date.now() - started) / 60000).toFixed(1)}`,
-					"",
-					renderReport(answers, pointRecords),
-					...(errors.length > 0 ? ["", "Errors:", ...errors] : []),
-				].join("\n");
 				const dir = join(dirname(options.questions), "results");
 				mkdirSync(dir, { recursive: true });
 				const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-				writeFileSync(join(dir, `${stamp}.json`), JSON.stringify({ options, answers, points: pointRecords, errors }, null, 2));
-				writeFileSync(join(dir, `${stamp}.txt`), `${report}\n`);
+				let report = "";
+				// Rewrites the same files after each run, so a stopped eval keeps every finished run.
+				const save = ({ answers, pointRecords, errors }: Results, runs: number) => {
+					report = [
+						`Session: ${options.session}`,
+						`Questions: ${options.questions}`,
+						`Model: ${ctx.model?.provider}/${ctx.model?.id}. Methods: ${options.methods.join(", ")}. Runs finished: ${runs} of ${options.repeat}. Minutes: ${((Date.now() - started) / 60000).toFixed(1)}`,
+						"",
+						renderReport(answers, pointRecords),
+						...(errors.length > 0 ? ["", "Errors:", ...errors] : []),
+					].join("\n");
+					writeFileSync(join(dir, `${stamp}.json`), JSON.stringify({ options, runsFinished: runs, answers, points: pointRecords, errors }, null, 2));
+					writeFileSync(join(dir, `${stamp}.txt`), `${report}\n`);
+					if (runs < options.repeat) ctx.ui.notify(`optcompact-eval: run ${runs} of ${options.repeat} saved to ${join(dir, `${stamp}.txt`)}`, "info");
+				};
+				await runEval(options, ctx, new AbortController().signal, save);
 				ctx.ui.notify(`optcompact-eval: done. Results: ${join(dir, `${stamp}.txt`)}\n\n${report}`, "info");
 			} catch (error) {
 				ctx.ui.notify(`optcompact-eval: failed: ${error instanceof Error ? error.message : String(error)}`, "error");

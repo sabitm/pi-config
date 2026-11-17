@@ -69,7 +69,9 @@ export function selectQuestions(questions: Question[], positions: Map<string, nu
 }
 
 export const exactHit = (question: Question, answer: string) =>
-	question.mustContain === undefined ? undefined : question.mustContain.every((text) => answer.includes(text));
+	question.mustContain === undefined
+		? undefined
+		: question.mustContain.every((text) => answer.toLowerCase().includes(text.toLowerCase()));
 
 export interface AnswerRecord {
 	method: string;
@@ -92,6 +94,9 @@ export interface PointRecord {
 	compactionTokens: number;
 	answerTokens: number;
 	zoomCalls: number;
+	// Rollup shape after this compaction. Only optcompact methods have rows.
+	topRows?: number;
+	groups?: number;
 }
 
 interface Tally {
@@ -184,6 +189,22 @@ export function renderReport(answers: AnswerRecord[], points: PointRecord[]): st
 			]),
 		),
 	);
+
+	const rollup = methods.filter((method) => points.some((p) => p.method === method && p.topRows !== undefined));
+	if (rollup.length > 0)
+		sections.push(
+			"Rollup by cut point (top-level rows/groups, first run):",
+			table(
+				["method", ...pointNumbers.map((n) => `#${n}`)],
+				rollup.map((method) => [
+					method,
+					...pointNumbers.map((n) => {
+						const p = points.find((r) => r.method === method && r.point === n && r.topRows !== undefined);
+						return p ? `${p.topRows}/${p.groups ?? 0}` : "-";
+					}),
+				]),
+			),
+		);
 
 	sections.push(
 		"Control: questions visible in the kept messages:",
