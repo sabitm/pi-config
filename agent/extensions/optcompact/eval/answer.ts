@@ -21,7 +21,12 @@ export function answerSystemPrompt(withZoom: boolean): string {
 	return [
 		"You are an AI coding agent. Your earlier conversation was compacted. The context in the user message is everything you can see now.",
 		"Answer each question from this context only.",
-		...(withZoom ? ["You can call the zoom tool with a row ID from the compaction summary to see more detail."] : []),
+		...(withZoom
+			? [
+					"You can call the zoom tool with a row ID from the compaction summary to see more detail.",
+					"Pass query with 1 to 4 key words first. Read full pages only when the matching parts are not enough.",
+				]
+			: []),
 		"If the context does not contain the answer, answer exactly: unknown. Do not guess.",
 		'Output only one JSON object and nothing else: {"answers": {"<question id>": "<answer>"}}',
 	].join("\n");

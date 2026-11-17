@@ -14,7 +14,7 @@ import {
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { fileOpsOf, paginate, renderGroup, renderLeafPage, renderSummary, serializeMessage, zoomToolName } from "./src/render.ts";
+import { fileOpsOf, paginate, renderGroup, renderLeafPage, renderSummary, searchRows, serializeMessage, zoomToolName } from "./src/render.ts";
 import {
 	addFileOps,
 	commitLeaves,
@@ -32,8 +32,10 @@ import {
 	resolvePins,
 	resolveTarget,
 	selectMerges,
+	walk,
 	type FileOp,
 	type PinEvent,
+	type RowNode,
 	type SpanItem,
 	type State,
 } from "./src/rows.ts";
@@ -258,7 +260,18 @@ function unpinRow(pi: ExtensionAPI, ctx: ExtensionContext, raw: string | undefin
 	return `Unpinned ${label}.`;
 }
 
-export function zoom(ctx: ExtensionContext, raw: string, page: number): string {
+function leafMessages(branch: SessionEntry[], index: Map<string, number>, edits: Edits, leaf: RowNode): string[] {
+	const first = index.get(leaf.firstEntryId);
+	const last = index.get(leaf.lastEntryId);
+	if (first === undefined || last === undefined) throw new Error(`The entries of ${labelOf(leaf)} are not on this branch.`);
+	return branch
+		.slice(first, last + 1)
+		.map((entry) => entryMessage(entry, edits))
+		.map((message) => (message ? serializeMessage(message) : ""))
+		.filter(Boolean);
+}
+
+export function zoom(ctx: ExtensionContext, raw: string, page: number, query?: string): string {
 	const branch = ctx.sessionManager.getBranch();
 	const state = latestState(branch);
 	if (!state) throw new Error("This branch has no optcompact summary yet.");
@@ -266,19 +279,14 @@ export function zoom(ctx: ExtensionContext, raw: string, page: number): string {
 	if (!label) throw new Error(`Invalid row ID "${raw}". Use #N or #A-B.`);
 	const node = findNode(state.nodes, label);
 	if (!node) throw new Error(`Row ${label} does not exist. Top-level rows: ${state.nodes.map(labelOf).join(", ")}`);
-	if (node.children) return renderGroup(node);
 	const index = branchIndex(branch);
-	const first = index.get(node.firstEntryId);
-	const last = index.get(node.lastEntryId);
-	if (first === undefined || last === undefined) throw new Error(`The entries of ${label} are not on this branch.`);
 	const edits = contextEdits(branch);
-	const text = branch
-		.slice(first, last + 1)
-		.map((entry) => entryMessage(entry, edits))
-		.map((message) => (message ? serializeMessage(message) : ""))
-		.filter(Boolean)
-		.join("\n\n");
-	const pages = paginate(text, zoomPageChars);
+	if (query?.trim()) {
+		const leaves = [...walk([node])].filter((leaf) => !leaf.children);
+		return searchRows(label, leaves.map((leaf) => ({ label: labelOf(leaf), messages: leafMessages(branch, index, edits, leaf) })), query);
+	}
+	if (node.children) return renderGroup(node);
+	const pages = paginate(leafMessages(branch, index, edits, node).join("\n\n"), zoomPageChars);
 	if (page > pages.length) throw new Error(`${label} has ${pages.length} pages.`);
 	return renderLeafPage(node, pages, page);
 }
@@ -305,15 +313,19 @@ export default function optcompact(pi: ExtensionAPI) {
 		name: zoomToolName,
 		label: "Zoom",
 		description:
-			"Show more detail for a row ID from the compaction summary. A group ID (#A-B) returns the summaries of its two halves. A single row ID (#N) returns the full messages of that row, in pages.",
-		promptSnippet: "Open a compaction summary row (#N or #A-B) to see its halves or its full messages",
-		promptGuidelines: ["Use zoom with a row ID from the compaction summary when you need details that the row summary does not contain."],
+			"Show more detail for a row ID from the compaction summary. With query, returns only the messages that contain the key words, across all rows of a group. Without query, a group ID (#A-B) returns the summaries of its two halves, and a single row ID (#N) returns the full messages of that row, in pages.",
+		promptSnippet: "Search or open a compaction summary row (#N or #A-B)",
+		promptGuidelines: [
+			"Use zoom with a row ID from the compaction summary when you need details that the row summary does not contain.",
+			"Pass query with 1 to 4 key words first, for example a name, version, or error. Read full pages only when the matching parts are not enough.",
+		],
 		parameters: Type.Object({
 			id: Type.String({ description: 'Row ID, for example "#12" or "#8-15"' }),
-			page: Type.Optional(Type.Integer({ minimum: 1, description: "Page of a single row. Default 1." })),
+			query: Type.Optional(Type.String({ description: "Key words. Returns only the messages that contain any of them." })),
+			page: Type.Optional(Type.Integer({ minimum: 1, description: "Page of a single row without query. Default 1." })),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return textResult(zoom(ctx, params.id, params.page ?? 1));
+			return textResult(zoom(ctx, params.id, params.page ?? 1, params.query));
 		},
 	});
 

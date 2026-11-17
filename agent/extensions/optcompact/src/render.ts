@@ -175,3 +175,52 @@ export function renderLeafPage(node: RowNode, pages: string[], page: number): st
 	const more = page < pages.length ? ` Call ${zoomToolName} with page ${page + 1} for more.` : "";
 	return `${labelOf(node)} full messages, page ${page} of ${pages.length}.${more}\n\n${pages[page - 1]}`;
 }
+
+export interface SearchRow {
+	label: string;
+	messages: string[];
+}
+
+const searchMaxChars = 6000;
+const snippetChars = 1200;
+
+function snippet(text: string, at: number): string {
+	const start = Math.max(0, at - Math.floor(snippetChars / 4));
+	const end = Math.min(text.length, start + snippetChars);
+	return `${start > 0 ? "..." : ""}${text.slice(start, end)}${end < text.length ? "..." : ""}`;
+}
+
+// Messages that match more distinct terms come first. Ties keep conversation order.
+export function searchRows(scope: string, rows: SearchRow[], query: string, maxChars = searchMaxChars): string {
+	const terms = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];
+	if (terms.length === 0) throw new Error("The query has no words.");
+	const hits: { label: string; index: number; total: number; text: string; matched: string[]; at: number }[] = [];
+	for (const row of rows) {
+		row.messages.forEach((text, index) => {
+			const lower = text.toLowerCase();
+			const positions = terms.map((term) => lower.indexOf(term));
+			const matched = terms.filter((_, i) => positions[i] >= 0);
+			if (matched.length === 0) return;
+			const at = Math.min(...positions.filter((p) => p >= 0));
+			hits.push({ label: row.label, index, total: row.messages.length, text, matched, at });
+		});
+	}
+	if (hits.length === 0) {
+		return `No message in ${scope} contains any of: ${terms.join(", ")}. Try other words, or call ${zoomToolName} without query to read pages.`;
+	}
+	hits.sort((a, b) => b.matched.length - a.matched.length);
+	const parts: string[] = [];
+	let used = 0;
+	for (const hit of hits) {
+		const part = `[${hit.label} message ${hit.index + 1} of ${hit.total}, matches: ${hit.matched.join(", ")}]\n${snippet(hit.text, hit.at)}`;
+		if (parts.length > 0 && used + part.length > maxChars) break;
+		parts.push(part);
+		used += part.length;
+	}
+	const rest = hits.length - parts.length;
+	return [
+		`Search "${terms.join(" ")}" in ${scope}: ${hits.length} matching messages.`,
+		...parts,
+		...(rest > 0 ? [`${rest} more matching messages are not shown. Use more specific words, or read the pages of one row.`] : []),
+	].join("\n\n");
+}

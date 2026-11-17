@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fileOpsOf, paginate, renderFiles, renderGroup, renderSummary, serializeMessage } from "../src/render.ts";
+import { fileOpsOf, paginate, renderFiles, renderGroup, renderSummary, searchRows, serializeMessage } from "../src/render.ts";
 import { addFileOps, emptyState, type RowNode } from "../src/rows.ts";
 import { batchJobs, clipMiddle, parseLeafResponse, parseMergeResponse } from "../src/summarize.ts";
 
@@ -166,5 +166,43 @@ describe("summarize helpers", () => {
 		});
 		const batches = batchJobs([job("r1", 60), job("r2", 60), job("r3", 30)], 100);
 		expect(batches.map((batch) => batch.map((j) => j.key))).toEqual([["r1"], ["r2", "r3"]]);
+	});
+});
+
+describe("searchRows", () => {
+	const rows = [
+		{ label: "#1", messages: ["[User]: set the seed", "[Assistant]: nothing here"] },
+		{ label: "#2", messages: ["[Assistant]: the xxhash seed is 0x4d65", "[Tool result]: SEED value"] },
+	];
+
+	test("ranks messages by distinct matched terms, ignores case, and labels rows", () => {
+		const text = searchRows("#1-2", rows, "Seed xxhash");
+		const headers = text.split("\n").filter((line) => line.startsWith("[#"));
+		expect(headers).toEqual([
+			"[#2 message 1 of 2, matches: seed, xxhash]",
+			"[#1 message 1 of 2, matches: seed]",
+			"[#2 message 2 of 2, matches: seed]",
+		]);
+		expect(text.startsWith('Search "seed xxhash" in #1-2: 3 matching messages.')).toBe(true);
+	});
+
+	test("clips each message around the first match", () => {
+		const long = `${"a".repeat(5000)} target ${"b".repeat(5000)}`;
+		const text = searchRows("#1", [{ label: "#1", messages: [long] }], "target");
+		expect(text).toContain("...");
+		expect(text).toContain("target");
+		expect(text.length).toBeLessThan(1500);
+	});
+
+	test("stops at the total limit and says how many are left", () => {
+		const many = [{ label: "#1", messages: Array.from({ length: 20 }, (_, i) => `hit ${i} ${"x".repeat(500)}`) }];
+		const text = searchRows("#1", many, "hit", 2000);
+		expect(text.match(/^\[#1 message/gm)?.length).toBeLessThan(20);
+		expect(text).toMatch(/\d+ more matching messages are not shown/);
+	});
+
+	test("reports no match and rejects an empty query", () => {
+		expect(searchRows("#1", rows, "absent")).toContain("No message in #1 contains any of: absent.");
+		expect(() => searchRows("#1", rows, "  ")).toThrow("no words");
 	});
 });

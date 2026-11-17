@@ -175,8 +175,9 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 		const tools = [
 			{
 				name: "zoom",
-				description: "Show more detail for a row ID from the compaction summary. A group ID (#A-B) returns its two halves. A row ID (#N) returns its full messages, in pages.",
-				parameters: Type.Object({ id: Type.String(), page: Type.Optional(Type.Integer({ minimum: 1 })) }),
+				description:
+					"Show more detail for a row ID from the compaction summary. With query, returns only the messages that contain the key words, across all rows of a group. Without query, a group ID (#A-B) returns its two halves, and a row ID (#N) returns its full messages, in pages.",
+				parameters: Type.Object({ id: Type.String(), query: Type.Optional(Type.String()), page: Type.Optional(Type.Integer({ minimum: 1 })) }),
 			},
 		];
 		const messages: Message[] = [{ role: "user", content: [{ type: "text", text: user }], timestamp: Date.now() }];
@@ -202,8 +203,8 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 					isError = true;
 				} else {
 					try {
-						const args = call.arguments as { id?: unknown; page?: unknown };
-						text = zoom(fake, String(args.id ?? ""), typeof args.page === "number" ? args.page : 1);
+						const args = call.arguments as { id?: unknown; page?: unknown; query?: unknown };
+						text = zoom(fake, String(args.id ?? ""), typeof args.page === "number" ? args.page : 1, typeof args.query === "string" ? args.query : undefined);
 					} catch (error) {
 						text = error instanceof Error ? error.message : String(error);
 						isError = true;
