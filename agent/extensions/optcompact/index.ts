@@ -31,8 +31,8 @@ import {
 	replacePendingIds,
 	resolvePins,
 	resolveTarget,
+	leavesInRange,
 	selectMerges,
-	walk,
 	type FileOp,
 	type PinEvent,
 	type RowNode,
@@ -277,14 +277,16 @@ export function zoom(ctx: ExtensionContext, raw: string, page: number, query?: s
 	if (!state) throw new Error("This branch has no optcompact summary yet.");
 	const label = normalizeLabel(raw);
 	if (!label) throw new Error(`Invalid row ID "${raw}". Use #N or #A-B.`);
-	const node = findNode(state.nodes, label);
-	if (!node) throw new Error(`Row ${label} does not exist. Top-level rows: ${state.nodes.map(labelOf).join(", ")}`);
+	const topRows = state.nodes.map(labelOf).join(", ");
 	const index = branchIndex(branch);
 	const edits = contextEdits(branch);
 	if (query?.trim()) {
-		const leaves = [...walk([node])].filter((leaf) => !leaf.children);
+		const leaves = leavesInRange(state.nodes, label);
+		if (leaves.length === 0) throw new Error(`No row is inside ${label}. Top-level rows: ${topRows}`);
 		return searchRows(label, leaves.map((leaf) => ({ label: labelOf(leaf), messages: leafMessages(branch, index, edits, leaf) })), query);
 	}
+	const node = findNode(state.nodes, label);
+	if (!node) throw new Error(`Row ${label} does not exist. Pass query to search all rows in a range. Top-level rows: ${topRows}`);
 	if (node.children) return renderGroup(node);
 	const pages = paginate(leafMessages(branch, index, edits, node).join("\n\n"), zoomPageChars);
 	if (page > pages.length) throw new Error(`${label} has ${pages.length} pages.`);
@@ -313,7 +315,7 @@ export default function optcompact(pi: ExtensionAPI) {
 		name: zoomToolName,
 		label: "Zoom",
 		description:
-			"Show more detail for a row ID from the compaction summary. With query, returns only the messages that contain the key words, across all rows of a group. Without query, a group ID (#A-B) returns the summaries of its two halves, and a single row ID (#N) returns the full messages of that row, in pages.",
+			"Show more detail for a row ID from the compaction summary. With query, returns only the messages that contain the key words; #A-B searches all rows from A to B, even when they are not one group, so use one search over a range for several related facts. Without query, a group ID (#A-B) returns the summaries of its two halves, and a single row ID (#N) returns the full messages of that row, in pages.",
 		promptSnippet: "Search or open a compaction summary row (#N or #A-B)",
 		promptGuidelines: [
 			"Use zoom with a row ID from the compaction summary when you need details that the row summary does not contain.",

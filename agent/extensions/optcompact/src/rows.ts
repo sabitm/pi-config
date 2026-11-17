@@ -110,6 +110,15 @@ export function normalizeLabel(raw: string): string | undefined {
 	return hi < lo ? undefined : labelOf({ lo, hi });
 }
 
+// Single rows fully inside lo..hi, including rows inside groups, in conversation order.
+export function leavesInRange(nodes: RowNode[], label: string): RowNode[] {
+	const match = label.match(/^#(\d+)(?:-(\d+))?$/);
+	if (!match) return [];
+	const lo = Number(match[1]);
+	const hi = match[2] === undefined ? lo : Number(match[2]);
+	return [...walk(nodes)].filter((node) => !node.children && node.lo >= lo && node.hi <= hi);
+}
+
 export interface SpanItem {
 	entryId: string;
 	userStart: boolean;

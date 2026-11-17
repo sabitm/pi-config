@@ -15,6 +15,7 @@ import {
 	parseState,
 	planLeaves,
 	replacePendingIds,
+	leavesInRange,
 	resolvePins,
 	selectMerges,
 	type RowNode,
@@ -252,5 +253,17 @@ describe("pins", () => {
 			index,
 		);
 		expect(pins.map((pin) => pin.reason)).toEqual(["new"]);
+	});
+});
+
+describe("leavesInRange", () => {
+	test("returns single rows inside the range, also inside groups, and nothing for a bad label", () => {
+		const group: RowNode = { ...leaf(1), hi: 2, lastEntryId: "e2b", summary: "g", children: [leaf(1), leaf(2)] };
+		const nodes = [group, leaf(3), leaf(4), leaf(5)];
+		expect(leavesInRange(nodes, "#2-4").map(labelOf)).toEqual(["#2", "#3", "#4"]);
+		expect(leavesInRange(nodes, "#1-2").map(labelOf)).toEqual(["#1", "#2"]);
+		expect(leavesInRange(nodes, "#4").map(labelOf)).toEqual(["#4"]);
+		expect(leavesInRange(nodes, "#9-12")).toEqual([]);
+		expect(leavesInRange(nodes, "bad")).toEqual([]);
 	});
 });

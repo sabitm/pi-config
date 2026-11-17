@@ -186,7 +186,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 			{
 				name: "zoom",
 				description:
-					"Show more detail for a row ID from the compaction summary. With query, returns only the messages that contain the key words, across all rows of a group. Without query, a group ID (#A-B) returns its two halves, and a row ID (#N) returns its full messages, in pages.",
+					"Show more detail for a row ID from the compaction summary. With query, returns only the messages that contain the key words; #A-B searches all rows from A to B, even when they are not one group, so use one search over a range for several related facts. Without query, a group ID (#A-B) returns its two halves, and a row ID (#N) returns its full messages, in pages.",
 				parameters: Type.Object({ id: Type.String(), query: Type.Optional(Type.String()), page: Type.Optional(Type.Integer({ minimum: 1 })) }),
 			},
 		];
