@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { LeafJob, MergeJob, RowNode } from "../src/rows.ts";
-import { leafLimit, leafPrompt, mergeLimit, mergePrompt } from "../src/summarize.ts";
+import { completeJson, leafLimit, leafPrompt, mergeLimit, mergePrompt } from "../src/summarize.ts";
 
 const node = (n: number, summary: string): RowNode => ({ lo: n, hi: n, firstEntryId: `a${n}`, lastEntryId: `b${n}`, summary });
 
@@ -38,5 +38,22 @@ describe("prompts", () => {
 	test("each row and each merge item states its limit", () => {
 		expect(leafPrompt([job(64000)], "", 1000000)).toContain('<row key="r1" max-chars="640">');
 		expect(mergePrompt([merge(1000, 1000)])).toContain('<item key="m1" max-chars="1200">');
+	});
+});
+
+describe("completeJson", () => {
+	test("a parse failure names the stop reason, output tokens, and response edges", async () => {
+		const text = `start-${"x".repeat(1000)}\n-end`;
+		const cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+		const usage = { input: 1, output: 16000, cacheRead: 0, cacheWrite: 0, totalTokens: 16001, cost };
+		const failing = completeJson(
+			async () => ({ text, usage, stopReason: "length" }),
+			"u",
+			() => {
+				throw new Error("response has no JSON object");
+			},
+			new AbortController().signal,
+		);
+		await expect(failing).rejects.toThrow(/response has no JSON object\. stop=length output tokens=16000 chars=1011 start="start-x+" end="x+ -end"/);
 	});
 });

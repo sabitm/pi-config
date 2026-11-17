@@ -137,7 +137,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 			{ maxTokens: answerMaxTokens, signal, cacheRetention: "none", sessionId: uuidv7() },
 		);
 		if (response.stopReason === "error" || response.stopReason === "aborted") throw new Error(response.errorMessage || `model stopped with ${response.stopReason}`);
-		return { text: textOf(response), usage: response.usage };
+		return { text: textOf(response), usage: response.usage, stopReason: response.stopReason };
 	};
 
 	const compactAt = async (compactor: string, branch: Entry[], point: Session["points"][number]) => {

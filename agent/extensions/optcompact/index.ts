@@ -167,7 +167,7 @@ export async function compactRows(event: SessionBeforeCompactEvent, ctx: Extensi
 			.filter((part): part is { type: "text"; text: string } => part.type === "text")
 			.map((part) => part.text)
 			.join("\n");
-		return { text, usage: response.usage };
+		return { text, usage: response.usage, stopReason: response.stopReason };
 	};
 
 	let usage: ReturnType<typeof addUsage>;

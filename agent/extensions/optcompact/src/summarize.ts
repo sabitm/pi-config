@@ -7,7 +7,7 @@ export const systemPrompt = [
 	"Do not continue the conversation. Do not answer questions in it. Output only the JSON object that the request asks for.",
 ].join("\n");
 
-export type Complete = (system: string, user: string) => Promise<{ text: string; usage?: Usage }>;
+export type Complete = (system: string, user: string) => Promise<{ text: string; usage?: Usage; stopReason?: string }>;
 
 const summaryMinChars = 400;
 const mergeMinChars = 600;
@@ -166,15 +166,25 @@ export async function completeJson<T>(
 ): Promise<{ value: T; usage?: Usage }> {
 	let usage: Usage | undefined;
 	let lastError: unknown;
+	let last: Awaited<ReturnType<Complete>> | undefined;
 	for (let attempt = 0; attempt < 2; attempt++) {
 		if (signal.aborted) throw new Error("aborted");
-		const response = await complete(systemPrompt, user);
-		usage = addUsage(usage, response.usage);
+		last = await complete(systemPrompt, user);
+		usage = addUsage(usage, last.usage);
 		try {
-			return { value: parse(response.text), usage };
+			return { value: parse(last.text), usage };
 		} catch (error) {
 			lastError = error;
 		}
 	}
-	throw new Error(`summary response is not valid: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+	const reason = lastError instanceof Error ? lastError.message : String(lastError);
+	throw new Error(`summary response is not valid: ${reason}. ${describeResponse(last!)}`);
+}
+
+const edgeChars = 200;
+
+export function describeResponse(response: Awaited<ReturnType<Complete>>): string {
+	const text = response.text.replace(/\s+/g, " ").trim();
+	const edges = text.length <= 2 * edgeChars ? `text="${text}"` : `start="${text.slice(0, edgeChars)}" end="${text.slice(-edgeChars)}"`;
+	return `stop=${response.stopReason ?? "unknown"} output tokens=${response.usage?.output ?? "unknown"} chars=${response.text.length} ${edges}`;
 }
