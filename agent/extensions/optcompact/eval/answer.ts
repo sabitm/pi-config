@@ -27,6 +27,7 @@ export function answerSystemPrompt(withZoom: boolean): string {
 					"Pass query with 1 to 4 key words first. Read full pages only when the matching parts are not enough.",
 				]
 			: []),
+		"For a yes/no question, start with the word that answers it (Yes or No), and do not contradict it after.",
 		"If the context does not contain the answer, answer exactly: unknown. Do not guess.",
 		'Output only one JSON object and nothing else: {"answers": {"<question id>": "<answer>"}}',
 	].join("\n");
