@@ -86,6 +86,24 @@ export interface AnswerRecord {
 	exact?: boolean;
 }
 
+export type ZoomKind = "search" | "search-empty" | "halves" | "page" | "error" | "limit";
+
+export interface ZoomCall {
+	id: string;
+	query?: string;
+	page?: number;
+	kind: ZoomKind;
+	chars: number;
+}
+
+// Classifies by the zoom output text, so it depends on the wording in src/render.ts.
+export function zoomKind(text: string, withQuery: boolean, isError: boolean, overLimit: boolean): ZoomKind {
+	if (overLimit) return "limit";
+	if (isError) return "error";
+	if (withQuery) return text.startsWith("No message in ") ? "search-empty" : "search";
+	return text.includes("\n\nHalves:\n") ? "halves" : "page";
+}
+
 export interface PointRecord {
 	method: string;
 	repeat: number;
@@ -97,6 +115,7 @@ export interface PointRecord {
 	// Rollup shape after this compaction. Only optcompact methods have rows.
 	topRows?: number;
 	groups?: number;
+	zoomLog?: ZoomCall[];
 }
 
 interface Tally {
@@ -205,6 +224,27 @@ export function renderReport(answers: AnswerRecord[], points: PointRecord[]): st
 				]),
 			),
 		);
+
+	const zoomMethods = methods.filter((method) => points.some((p) => p.method === method && p.zoomLog !== undefined));
+	if (zoomMethods.length > 0) {
+		const kinds: ZoomKind[] = ["search", "search-empty", "halves", "page", "error", "limit"];
+		sections.push(
+			"Zoom calls (all runs):",
+			table(
+				["method", "calls", ...kinds, "avg result chars"],
+				zoomMethods.map((method) => {
+					const log = points.filter((p) => p.method === method).flatMap((p) => p.zoomLog ?? []);
+					const answered = log.filter((call) => call.kind !== "limit");
+					return [
+						method,
+						String(log.length),
+						...kinds.map((kind) => String(log.filter((call) => call.kind === kind).length)),
+						String(answered.length === 0 ? 0 : Math.round(answered.reduce((sum, call) => sum + call.chars, 0) / answered.length)),
+					];
+				}),
+			),
+		);
+	}
 
 	sections.push(
 		"Control: questions visible in the kept messages:",

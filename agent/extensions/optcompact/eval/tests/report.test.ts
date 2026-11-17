@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseAnswers, parseGrades, renderContext } from "../answer.ts";
-import { exactHit, parseQuestions, renderReport, selectQuestions, type AnswerRecord, type Question } from "../report.ts";
+import { exactHit, parseQuestions, renderReport, selectQuestions, zoomKind, type AnswerRecord, type Question } from "../report.ts";
 
 const q = (id: string, sourceEntry: string, extra: Partial<Question> = {}): Question => ({
 	id,
@@ -116,5 +116,38 @@ describe("renderReport", () => {
 		const sections = text.split("\n\n");
 		const at = sections.indexOf("Rollup by cut point (top-level rows/groups, first run):");
 		expect(sections[at + 1].split("\n").slice(1)).toEqual(["rows    7/0  9/3"]);
+	});
+});
+
+describe("zoom calls", () => {
+	test("zoomKind classifies by outcome and output text", () => {
+		expect(zoomKind("x", true, false, true)).toBe("limit");
+		expect(zoomKind("Row #9 does not exist.", false, true, false)).toBe("error");
+		expect(zoomKind('Search "a" in #1: 2 matching messages.', true, false, false)).toBe("search");
+		expect(zoomKind("No message in #1 contains any of: a.", true, false, false)).toBe("search-empty");
+		expect(zoomKind("#1-2: s\n\nHalves:\n- #1: a", false, false, false)).toBe("halves");
+		expect(zoomKind("#1 full messages, page 1 of 2.", false, false, false)).toBe("page");
+	});
+
+	test("renders counts by kind and the average size of answered calls", () => {
+		const base = { repeat: 1, point: 1, summaryChars: 1, compactionTokens: 1, answerTokens: 1, zoomCalls: 3 };
+		const text = renderReport(
+			[],
+			[
+				{
+					...base,
+					method: "z",
+					zoomLog: [
+						{ id: "#1", query: "a", kind: "search", chars: 100 },
+						{ id: "#2", page: 1, kind: "page", chars: 300 },
+						{ id: "#3", kind: "limit", chars: 50 },
+					],
+				},
+				{ ...base, method: "plain", zoomCalls: 0 },
+			],
+		);
+		const sections = text.split("\n\n");
+		const at = sections.indexOf("Zoom calls (all runs):");
+		expect(sections[at + 1].split("\n").slice(1).map((line) => line.split(/\s{2,}/))).toEqual([["z", "3", "1", "0", "0", "1", "0", "1", "200"]]);
 	});
 });

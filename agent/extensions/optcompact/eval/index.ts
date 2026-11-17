@@ -26,7 +26,17 @@ import {
 	parseGrades,
 	renderContext,
 } from "./answer.ts";
-import { exactHit, parseQuestions, renderReport, selectQuestions, type AnswerRecord, type PointRecord, type Question } from "./report.ts";
+import {
+	exactHit,
+	parseQuestions,
+	renderReport,
+	selectQuestions,
+	zoomKind,
+	type AnswerRecord,
+	type PointRecord,
+	type Question,
+	type ZoomCall,
+} from "./report.ts";
 import { branchBefore, compactionEntry, defaultSlices, loadSession, relink, type Entry, type Session } from "./replay.ts";
 
 const methods = ["pi-default", "optcompact", "optcompact+zoom"] as const;
@@ -183,6 +193,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 		const messages: Message[] = [{ role: "user", content: [{ type: "text", text: user }], timestamp: Date.now() }];
 		let usage: Usage | undefined;
 		let calls = 0;
+		const log: ZoomCall[] = [];
 		for (let round = 0; round < maxToolRounds; round++) {
 			const response = await ctx.modelRegistry.complete(
 				model,
@@ -193,23 +204,27 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 			usage = addUsage(usage, response.usage);
 			messages.push(response);
 			const toolCalls = response.content.filter((part) => part.type === "toolCall");
-			if (toolCalls.length === 0) return { text: textOf(response), usage, calls };
+			if (toolCalls.length === 0) return { text: textOf(response), usage, calls, log };
 			for (const call of toolCalls) {
 				calls++;
 				let text: string;
 				let isError = false;
+				const args = call.arguments as { id?: unknown; page?: unknown; query?: unknown };
+				const id = String(args.id ?? "");
+				const page = typeof args.page === "number" ? args.page : undefined;
+				const query = typeof args.query === "string" && args.query.trim() ? args.query : undefined;
 				if (calls > maxZoomCalls) {
 					text = "Zoom limit reached. Answer now with the JSON object.";
 					isError = true;
 				} else {
 					try {
-						const args = call.arguments as { id?: unknown; page?: unknown; query?: unknown };
-						text = zoom(fake, String(args.id ?? ""), typeof args.page === "number" ? args.page : 1, typeof args.query === "string" ? args.query : undefined);
+						text = zoom(fake, id, page ?? 1, query);
 					} catch (error) {
 						text = error instanceof Error ? error.message : String(error);
 						isError = true;
 					}
 				}
+				log.push({ id, query, page, kind: zoomKind(text, Boolean(query), isError, calls > maxZoomCalls), chars: text.length });
 				messages.push({ role: "toolResult", toolCallId: call.id, toolName: call.name, content: [{ type: "text", text }], isError, timestamp: Date.now() } as Message);
 			}
 		}
@@ -257,6 +272,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 						if (method === "optcompact+zoom") {
 							const reply = await answerWithZoom(system, user, answerBranch);
 							record.zoomCalls = reply.calls;
+							record.zoomLog = reply.log;
 							record.answerTokens += reply.usage?.totalTokens ?? 0;
 							given = parseAnswers(reply.text, ids);
 						} else {
