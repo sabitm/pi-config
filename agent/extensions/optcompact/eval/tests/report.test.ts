@@ -94,10 +94,10 @@ describe("renderReport", () => {
 	test("scores partial as half and keeps kept-message questions apart", () => {
 		const text = renderReport(
 			[record("m", "correct"), record("m", "partial"), record("m", "wrong"), record("m", "unknown"), record("m", "wrong", true)],
-			[{ method: "m", repeat: 1, point: 1, summaryChars: 100, compactionTokens: 10, answerTokens: 5, zoomCalls: 2 }],
+			[{ method: "m", repeat: 1, point: 1, summaryChars: 100, compactionTokens: 10, answerTokens: 5, answerCachedTokens: 3, zoomCalls: 2 }],
 		);
 		const summaryRow = text.split("\n").find((line) => line.startsWith("m "))!;
-		expect(summaryRow.split(/\s{2,}/)).toEqual(["m", "4", "38%", "1", "1", "1", "1", "-", "100", "10", "2"]);
+		expect(summaryRow.split(/\s{2,}/)).toEqual(["m", "4", "38%", "1", "1", "1", "1", "-", "100", "10", "2", "3"]);
 		expect(text).toContain("Control: questions visible in the kept messages:");
 		expect(text.split("\n").at(-1)!.split(/\s{2,}/)).toEqual(["m", "1", "0%"]);
 		expect(text).not.toContain("Rollup by cut point");

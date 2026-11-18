@@ -135,15 +135,18 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 	// Fail on unknown entry IDs before any model call.
 	for (const point of session.points) selectQuestions(questions, session.positions, point);
 
-	const complete: Complete = async (system, user) => {
+	// The judge sends no cache retention. Answer calls allow caching, as live sessions do.
+	const completeWith = (cache: boolean): Complete => async (system, user) => {
 		const response = await ctx.modelRegistry.complete(
 			model,
 			{ systemPrompt: system, messages: [{ role: "user", content: [{ type: "text", text: user }], timestamp: Date.now() }] },
-			{ maxTokens: answerMaxTokens, signal, cacheRetention: "none", sessionId: uuidv7() },
+			{ maxTokens: answerMaxTokens, signal, ...(cache ? {} : { cacheRetention: "none" as const }), sessionId: uuidv7() },
 		);
 		if (response.stopReason === "error" || response.stopReason === "aborted") throw new Error(response.errorMessage || `model stopped with ${response.stopReason}`);
 		return { text: textOf(response), usage: response.usage, stopReason: response.stopReason };
 	};
+	const complete = completeWith(false);
+	const completeAnswer = completeWith(true);
 
 	const compactAt = async (compactor: string, branch: Entry[], point: Session["points"][number]) => {
 		if (compactor === "optcompact") {
@@ -196,6 +199,8 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 			},
 		];
 		const messages: Message[] = [{ role: "user", content: [{ type: "text", text: user }], timestamp: Date.now() }];
+		// One session ID for the whole loop, so each round can reuse the cached prefix of the one before.
+		const sessionId = uuidv7();
 		let usage: Usage | undefined;
 		let calls = 0;
 		const log: ZoomCall[] = [];
@@ -203,7 +208,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 			const response = await ctx.modelRegistry.complete(
 				model,
 				{ systemPrompt: system, messages, tools },
-				{ maxTokens: answerMaxTokens, signal, cacheRetention: "none", sessionId: uuidv7() },
+				{ maxTokens: answerMaxTokens, signal, sessionId },
 			);
 			if (response.stopReason === "error" || response.stopReason === "aborted") throw new Error(response.errorMessage || `model stopped with ${response.stopReason}`);
 			usage = addUsage(usage, response.usage);
@@ -279,11 +284,13 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 							record.zoomCalls = reply.calls;
 							record.zoomLog = reply.log;
 							record.answerTokens += reply.usage?.totalTokens ?? 0;
+							record.answerCachedTokens = reply.usage?.cacheRead ?? 0;
 							given = parseAnswers(reply.text, ids);
 						} else {
 							// completeJson sends the summarizer system prompt, so route through the answer prompt instead.
-							const reply = await completeJson((_system, u) => complete(system, u), user, (text) => parseAnswers(text, ids), signal);
+							const reply = await completeJson((_system, u) => completeAnswer(system, u), user, (text) => parseAnswers(text, ids), signal);
 							record.answerTokens += reply.usage?.totalTokens ?? 0;
+							record.answerCachedTokens = reply.usage?.cacheRead ?? 0;
 							given = reply.value;
 						}
 						const items = asked.map((a) => ({ asked: a, answer: given.get(a.question.id)! }));

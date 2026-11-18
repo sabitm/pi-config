@@ -111,6 +111,8 @@ export interface PointRecord {
 	summaryChars: number;
 	compactionTokens: number;
 	answerTokens: number;
+	// Cache reads in the answer calls only. The judge is not cached.
+	answerCachedTokens?: number;
 	zoomCalls: number;
 	// Rollup shape after this compaction. Only optcompact methods have rows.
 	topRows?: number;
@@ -159,7 +161,7 @@ export function renderReport(answers: AnswerRecord[], points: PointRecord[]): st
 	sections.push(
 		"Questions answered from the summary (source before the cut):",
 		table(
-			["method", "asked", "score", "correct", "partial", "wrong", "unknown", "exact", "avg summary chars", "compaction tokens", "zoom calls"],
+			["method", "asked", "score", "correct", "partial", "wrong", "unknown", "exact", "avg summary chars", "compaction tokens", "zoom calls", "cached answer tokens"],
 			methods.map((method) => {
 				const t = tally(answers.filter((a) => a.method === method && !a.visibleInKept));
 				const mine = points.filter((p) => p.method === method);
@@ -176,6 +178,7 @@ export function renderReport(answers: AnswerRecord[], points: PointRecord[]): st
 					String(avgChars),
 					String(mine.reduce((s, p) => s + p.compactionTokens, 0)),
 					String(mine.reduce((s, p) => s + p.zoomCalls, 0)),
+					String(mine.reduce((s, p) => s + (p.answerCachedTokens ?? 0), 0)),
 				];
 			}),
 		),
