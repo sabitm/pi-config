@@ -109,7 +109,7 @@ function pinEvents(branch: SessionEntry[]): PinEvent[] {
 
 const branchIndex = (branch: SessionEntry[]) => new Map(branch.map((entry, i) => [entry.id, i]));
 
-export async function compactRows(event: SessionBeforeCompactEvent, ctx: ExtensionContext) {
+export async function compactRows(event: SessionBeforeCompactEvent, ctx: ExtensionContext, options: { rowBudgetTokens?: number } = {}) {
 	const model = ctx.model;
 	if (!model) throw new Error("no active model");
 	const { preparation, signal } = event;
@@ -190,7 +190,7 @@ export async function compactRows(event: SessionBeforeCompactEvent, ctx: Extensi
 	const events = pinEvents(branch);
 	let merges = 0;
 	for (let round = 0; round < maxMergeRounds; round++) {
-		const mergeJobs = selectMerges(state, rowBudgetTokens);
+		const mergeJobs = selectMerges(state, options.rowBudgetTokens ?? rowBudgetTokens);
 		if (mergeJobs.length === 0) break;
 		const keys = mergeJobs.map((job) => job.key);
 		const result = await completeJson(complete, mergePrompt(mergeJobs), (text) => parseMergeResponse(text, keys), signal);

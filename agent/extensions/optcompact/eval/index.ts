@@ -52,6 +52,7 @@ interface Options {
 	methods: Method[];
 	repeat: number;
 	points?: [number, number];
+	rowBudget?: number;
 }
 
 function parseArgs(args: string, cwd: string): Options {
@@ -80,11 +81,15 @@ function parseArgs(args: string, cwd: string): Options {
 			const to = match[2] === undefined ? from : Number(match[2]);
 			if (from < 1 || to < from) throw new Error("--points range is not valid");
 			options.points = [from, to];
+		} else if (token === "--row-budget") {
+			const n = Number(value());
+			if (!Number.isInteger(n) || n < 1) throw new Error("--row-budget must be a positive integer");
+			options.rowBudget = n;
 		} else if (token.startsWith("--")) {
 			throw new Error(`unknown option ${token}`);
 		} else positional.push(token);
 	}
-	if (positional.length !== 2) throw new Error("usage: /optcompact-eval <session.jsonl> <questions.json> [--methods a,b] [--repeat N] [--points A-B]");
+	if (positional.length !== 2) throw new Error("usage: /optcompact-eval <session.jsonl> <questions.json> [--methods a,b] [--repeat N] [--points A-B] [--row-budget N]");
 	return { ...(options as Options), session: resolve(cwd, positional[0]), questions: resolve(cwd, positional[1]) };
 }
 
@@ -150,7 +155,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 				willRetry: false,
 				signal,
 			} as unknown as SessionBeforeCompactEvent;
-			return compactRows(event, fakeContext(ctx, session.cwd, branch));
+			return compactRows(event, fakeContext(ctx, session.cwd, branch), { rowBudgetTokens: options.rowBudget });
 		}
 		const slices = defaultSlices(buildSessionProjection(branch as unknown as SessionEntry[]).entries as never, point.firstKeptEntryId);
 		const fileOps = { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() };
@@ -316,7 +321,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 
 export default function optcompactEval(pi: ExtensionAPI) {
 	pi.registerCommand("optcompact-eval", {
-		description: "Replay a session and score compaction methods: /optcompact-eval <session.jsonl> <questions.json> [--methods a,b] [--repeat N] [--points A-B]",
+		description: "Replay a session and score compaction methods: /optcompact-eval <session.jsonl> <questions.json> [--methods a,b] [--repeat N] [--points A-B] [--row-budget N]",
 		handler: async (args, ctx) => {
 			try {
 				const options = parseArgs(args, ctx.cwd);
@@ -330,7 +335,7 @@ export default function optcompactEval(pi: ExtensionAPI) {
 					report = [
 						`Session: ${options.session}`,
 						`Questions: ${options.questions}`,
-						`Model: ${ctx.model?.provider}/${ctx.model?.id}. Methods: ${options.methods.join(", ")}. Runs finished: ${runs} of ${options.repeat}. Minutes: ${((Date.now() - started) / 60000).toFixed(1)}`,
+						`Model: ${ctx.model?.provider}/${ctx.model?.id}. Methods: ${options.methods.join(", ")}. Runs finished: ${runs} of ${options.repeat}. Row budget: ${options.rowBudget ?? "default"}. Minutes: ${((Date.now() - started) / 60000).toFixed(1)}`,
 						"",
 						renderReport(answers, pointRecords),
 						...(errors.length > 0 ? ["", "Errors:", ...errors] : []),
