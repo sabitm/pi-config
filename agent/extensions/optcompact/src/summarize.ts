@@ -108,13 +108,37 @@ export function mergePrompt(jobs: MergeJob[]): string {
 	return lines.join("\n");
 }
 
-function parseObject(text: string): Record<string, unknown> {
-	const start = text.indexOf("{");
-	const end = text.lastIndexOf("}");
-	if (start < 0 || end <= start) throw new Error("response has no JSON object");
-	const value = JSON.parse(text.slice(start, end + 1));
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("response JSON is not an object");
-	return value as Record<string, unknown>;
+// Index just after the "}" that closes the object opened at start, or -1. Braces inside strings do not count.
+function objectEnd(text: string, start: number): number {
+	let depth = 0;
+	let inString = false;
+	for (let i = start; i < text.length; i++) {
+		const char = text[i];
+		if (inString) {
+			if (char === "\\") i++;
+			else if (char === '"') inString = false;
+		} else if (char === '"') inString = true;
+		else if (char === "{") depth++;
+		else if (char === "}" && --depth === 0) return i + 1;
+	}
+	return -1;
+}
+
+// Parses the first complete JSON object and ignores text around it, such as a code fence or an extra "}".
+export function parseJsonObject(text: string): Record<string, unknown> {
+	let lastError: unknown;
+	for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
+		const end = objectEnd(text, start);
+		if (end < 0) break;
+		try {
+			const value = JSON.parse(text.slice(start, end));
+			if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+		} catch (error) {
+			lastError = error;
+		}
+	}
+	if (lastError instanceof Error) throw lastError;
+	throw new Error("response has no JSON object");
 }
 
 function readSummaries(map: unknown, keys: string[], field: string): Map<string, string> {
@@ -129,13 +153,13 @@ function readSummaries(map: unknown, keys: string[], field: string): Map<string,
 }
 
 export function parseLeafResponse(text: string, keys: string[]): { summaries: Map<string, string>; goalNow: string } {
-	const value = parseObject(text);
+	const value = parseJsonObject(text);
 	if (typeof value.goalNow !== "string") throw new Error('response has no "goalNow" string');
 	return { summaries: readSummaries(value.rows, keys, "rows"), goalNow: value.goalNow.trim() };
 }
 
 export function parseMergeResponse(text: string, keys: string[]): Map<string, string> {
-	return readSummaries(parseObject(text).nodes, keys, "nodes");
+	return readSummaries(parseJsonObject(text).nodes, keys, "nodes");
 }
 
 export function addUsage(total: Usage | undefined, next: Usage | undefined): Usage | undefined {

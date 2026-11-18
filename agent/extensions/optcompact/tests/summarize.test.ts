@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { LeafJob, MergeJob, RowNode } from "../src/rows.ts";
-import { completeJson, leafLimit, leafPrompt, mergeLimit, mergePrompt } from "../src/summarize.ts";
+import { completeJson, leafLimit, leafPrompt, mergeLimit, mergePrompt, parseJsonObject } from "../src/summarize.ts";
 
 const node = (n: number, summary: string): RowNode => ({ lo: n, hi: n, firstEntryId: `a${n}`, lastEntryId: `b${n}`, summary });
 
@@ -55,5 +55,25 @@ describe("completeJson", () => {
 			new AbortController().signal,
 		);
 		await expect(failing).rejects.toThrow(/response has no JSON object\. stop=length output tokens=16000 chars=1011 start="start-x+" end="x+ -end"/);
+	});
+});
+
+describe("parseJsonObject", () => {
+	test("ignores an extra closing brace and text around the object", () => {
+		expect(parseJsonObject('{"nodes":{"m1":"a"}}}')).toEqual({ nodes: { m1: "a" } });
+		expect(parseJsonObject('Here:\n```json\n{"a":1}\n```\nDone.')).toEqual({ a: 1 });
+	});
+
+	test("does not count braces or escaped quotes inside strings", () => {
+		expect(parseJsonObject('{"a":"x } \\" { y"} trailing }')).toEqual({ a: 'x } " { y' });
+	});
+
+	test("tries the next object when the first one does not parse", () => {
+		expect(parseJsonObject('{not json} {"b":2}')).toEqual({ b: 2 });
+	});
+
+	test("fails when no object exists", () => {
+		expect(() => parseJsonObject("no json here")).toThrow("response has no JSON object");
+		expect(() => parseJsonObject('{"open": 1')).toThrow("response has no JSON object");
 	});
 });

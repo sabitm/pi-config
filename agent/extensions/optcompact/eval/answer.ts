@@ -1,5 +1,6 @@
 // Answer and judge prompts, and their JSON parsing. No Pi imports.
 import { serializeMessage } from "../src/render.ts";
+import { parseJsonObject } from "../src/summarize.ts";
 import { grades, type Asked, type Grade } from "./report.ts";
 
 const toolResultMaxChars = 2000;
@@ -70,17 +71,9 @@ export function judgePrompt(items: { asked: Asked; answer: string }[]): string {
 
 export const judgeSystemPrompt = "You grade answers against expected answers. Output only the JSON object that the request asks for.";
 
-function parseObject(text: string): Record<string, unknown> {
-	const start = text.indexOf("{");
-	const end = text.lastIndexOf("}");
-	if (start < 0 || end <= start) throw new Error("response has no JSON object");
-	const value = JSON.parse(text.slice(start, end + 1));
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("response JSON is not an object");
-	return value as Record<string, unknown>;
-}
 
 export function parseAnswers(text: string, ids: string[]): Map<string, string> {
-	const answers = parseObject(text).answers;
+	const answers = parseJsonObject(text).answers;
 	if (!answers || typeof answers !== "object") throw new Error('response has no "answers" object');
 	const result = new Map<string, string>();
 	for (const id of ids) {
@@ -92,7 +85,7 @@ export function parseAnswers(text: string, ids: string[]): Map<string, string> {
 }
 
 export function parseGrades(text: string, ids: string[]): Map<string, { grade: Grade; reason: string }> {
-	const map = parseObject(text).grades;
+	const map = parseJsonObject(text).grades;
 	if (!map || typeof map !== "object") throw new Error('response has no "grades" object');
 	const result = new Map<string, { grade: Grade; reason: string }>();
 	for (const id of ids) {
