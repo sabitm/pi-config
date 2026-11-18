@@ -39,6 +39,16 @@ describe("prompts", () => {
 		expect(leafPrompt([job(64000)], "", 1000000)).toContain('<row key="r1" max-chars="640">');
 		expect(mergePrompt([merge(1000, 1000)])).toContain('<item key="m1" max-chars="1200">');
 	});
+
+	test("both prompts put exact values and decision reasons before narrative", () => {
+		const leaf = leafPrompt([job(64000)], "", 1000000);
+		expect(leaf).toContain("use at least half of it");
+		expect(leaf).toContain("1. Exact values:");
+		expect(leaf).toContain("2. Decisions, each with its reason");
+		const mergeText = mergePrompt([merge(1000, 1000)]);
+		expect(mergeText).toContain("Keep every exact value from A and B");
+		expect(mergeText).toContain("Leave out narrative first.");
+	});
 });
 
 describe("completeJson", () => {
