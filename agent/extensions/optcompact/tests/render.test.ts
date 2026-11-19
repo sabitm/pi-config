@@ -24,10 +24,10 @@ describe("serializeMessage", () => {
 		expect(serializeMessage(message)).not.toContain("more characters");
 	});
 
-	test("leaves out zoom output when summarizing, keeps it in zoom", () => {
+	test("always leaves out zoom output", () => {
 		const message = { role: "toolResult", toolName: "zoom", content: [{ type: "text", text: "old rows" }] };
 		expect(serializeMessage(message, 2000)).toBe("[Tool result]: [zoom output omitted]");
-		expect(serializeMessage(message)).toContain("old rows");
+		expect(serializeMessage(message)).toBe("[Tool result]: [zoom output omitted]");
 	});
 });
 

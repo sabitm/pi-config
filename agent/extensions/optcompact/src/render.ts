@@ -61,7 +61,7 @@ function clip(text: string, max: number | undefined): string {
 	return `${text.slice(0, max)}\n[... ${text.length - max} more characters]`;
 }
 
-// toolResultMax undefined keeps tool results in full (zoom). Thinking blocks are always left out.
+// toolResultMax undefined keeps tool results in full (zoom). Thinking blocks and zoom output are always left out.
 export function serializeMessage(message: Message, toolResultMax?: number): string {
 	switch (message.role) {
 		case "user":
@@ -78,8 +78,9 @@ export function serializeMessage(message: Message, toolResultMax?: number): stri
 			return lines.join("\n");
 		}
 		case "toolResult":
-			// Zoom output is a copy of older rows. Summarizing it again would grow the summary on every zoom.
-			if (message.toolName === zoomToolName && toolResultMax !== undefined) return "[Tool result]: [zoom output omitted]";
+			// Zoom output is a copy of older rows, which stay on the branch. Keeping it would grow summaries on every zoom
+			// and make zoom find the same messages twice.
+			if (message.toolName === zoomToolName) return "[Tool result]: [zoom output omitted]";
 			return `[Tool result ${message.toolName ?? ""}]: ${clip(partsText(message.content), toolResultMax)}`;
 		case "bashExecution":
 			return `[User bash]: ${message.command ?? ""}\n${clip(message.output ?? "", toolResultMax)}`;
