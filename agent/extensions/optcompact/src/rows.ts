@@ -99,7 +99,6 @@ export const lastLeaf = (state: State): RowNode | undefined => {
 	return node;
 };
 
-const depth = (node: RowNode): number => (node.children ? 1 + Math.max(depth(node.children[0]), depth(node.children[1])) : 0);
 
 // Accepts "12", "#12", "8-15", "#8-15". Returns undefined for anything else.
 export function normalizeLabel(raw: string): string | undefined {
@@ -285,27 +284,39 @@ export interface MergeJob {
 	b: RowNode;
 }
 
-// A merged summary is expected to be about 60% of its two children combined.
-export const mergeShrink = 0.6;
+// Every group line has this size, whatever its depth, so the line count stays near 40 at the floor for any
+// budget. Assumes about 4 characters per token, as estimateTokens does.
+export function groupChars(budgetTokens: number): number {
+	return Math.min(2000, Math.max(500, Math.round((budgetTokens * 4) / 40)));
+}
 
-// One round: pick disjoint adjacent pairs, shallowest first and then oldest, until the estimate fits the budget.
+export const joinSummaries = (job: MergeJob) => `${job.a.summary}\n${job.b.summary}`;
+
+// A pair that fits is joined unchanged, without a model call.
+export const fitsJoined = (job: MergeJob, size: number) => joinSummaries(job).length <= size;
+
+// One round: pick disjoint adjacent pairs, most due first and then oldest, until the estimate fits the budget.
+// due = rows since the pair ended / rows in its larger half, so detail fades with age. Dividing by the larger half
+// keeps a big group from absorbing small rows early.
 // Pinned rows merge too. The Pinned section shows the pinned node itself, which a merge does not rewrite.
 export function selectMerges(state: State, budgetTokens: number): MergeJob[] {
+	const size = groupChars(budgetTokens);
+	const newest = state.nodes.at(-1)?.hi ?? 0;
 	let estimate = rowTokens(state.nodes);
 	const used = new Set<number>();
 	const jobs: MergeJob[] = [];
 	const mergeable = (node: RowNode) => !node.partial;
 	while (estimate > budgetTokens) {
 		let best = -1;
-		let bestDepth = Infinity;
+		let bestDue = -Infinity;
 		for (let i = 0; i + 1 < state.nodes.length; i++) {
 			const a = state.nodes[i];
 			const b = state.nodes[i + 1];
 			if (used.has(i) || used.has(i + 1) || !mergeable(a) || !mergeable(b)) continue;
-			const pairDepth = Math.max(depth(a), depth(b));
-			if (pairDepth < bestDepth) {
+			const due = (newest - b.hi) / Math.max(a.hi - a.lo + 1, b.hi - b.lo + 1);
+			if (due > bestDue) {
 				best = i;
-				bestDepth = pairDepth;
+				bestDue = due;
 			}
 		}
 		if (best < 0) break;
@@ -313,8 +324,10 @@ export function selectMerges(state: State, budgetTokens: number): MergeJob[] {
 		const b = state.nodes[best + 1];
 		used.add(best);
 		used.add(best + 1);
-		jobs.push({ key: `m${jobs.length + 1}`, a, b });
-		estimate -= Math.floor((1 - mergeShrink) * rowTokens([a, b]));
+		const job = { key: `m${jobs.length + 1}`, a, b };
+		jobs.push(job);
+		const mergedChars = Math.min(joinSummaries(job).length, size);
+		estimate -= rowTokens([a, b]) - estimateTokens(`- ${labelOf({ lo: a.lo, hi: b.hi })}: ${"x".repeat(mergedChars)}\n`);
 	}
 	return jobs;
 }

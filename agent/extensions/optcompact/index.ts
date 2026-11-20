@@ -21,6 +21,9 @@ import {
 	commitMerges,
 	emptyState,
 	findNode,
+	fitsJoined,
+	groupChars,
+	joinSummaries,
 	groupSpans,
 	labelOf,
 	lastLeaf,
@@ -190,12 +193,20 @@ export async function compactRows(event: SessionBeforeCompactEvent, ctx: Extensi
 	const events = pinEvents(branch);
 	let merges = 0;
 	for (let round = 0; round < maxMergeRounds; round++) {
-		const mergeJobs = selectMerges(state, options.rowBudgetTokens ?? rowBudgetTokens);
+		const budget = options.rowBudgetTokens ?? rowBudgetTokens;
+		const mergeJobs = selectMerges(state, budget);
 		if (mergeJobs.length === 0) break;
-		const keys = mergeJobs.map((job) => job.key);
-		const result = await completeJson(complete, mergePrompt(mergeJobs), (text) => parseMergeResponse(text, keys), signal);
-		usage = addUsage(usage, result.usage);
-		state = commitMerges(state, mergeJobs, result.value);
+		const size = groupChars(budget);
+		const merged = new Map<string, string>();
+		for (const job of mergeJobs) if (fitsJoined(job, size)) merged.set(job.key, joinSummaries(job));
+		const asked = mergeJobs.filter((job) => !merged.has(job.key));
+		if (asked.length > 0) {
+			const keys = asked.map((job) => job.key);
+			const result = await completeJson(complete, mergePrompt(asked, size), (text) => parseMergeResponse(text, keys), signal);
+			usage = addUsage(usage, result.usage);
+			for (const [key, summary] of result.value) merged.set(key, summary);
+		}
+		state = commitMerges(state, mergeJobs, merged);
 		merges += mergeJobs.length;
 	}
 

@@ -1,6 +1,6 @@
 // LLM prompts and JSON parsing for row summaries and rollup merges.
 import type { Usage } from "@earendil-works/pi-ai";
-import { type LeafJob, type MergeJob, mergeShrink } from "./rows.ts";
+import type { LeafJob, MergeJob } from "./rows.ts";
 
 export const systemPrompt = [
 	"You summarize parts of a conversation between a user and an AI coding agent.",
@@ -10,7 +10,6 @@ export const systemPrompt = [
 export type Complete = (system: string, user: string) => Promise<{ text: string; usage?: Usage; stopReason?: string }>;
 
 const summaryMinChars = 400;
-const mergeMinChars = 600;
 const summaryMaxChars = 2000;
 const goalNowMaxChars = 1500;
 
@@ -20,10 +19,6 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 export function leafLimit(job: LeafJob): number {
 	const limit = clamp(jobText(job).length / 100, summaryMinChars, summaryMaxChars);
 	return Math.max(limit, Math.min(job.extend?.summary.length ?? 0, summaryMaxChars));
-}
-
-export function mergeLimit(job: MergeJob): number {
-	return clamp(mergeShrink * (job.a.summary.length + job.b.summary.length), mergeMinChars, summaryMaxChars);
 }
 
 export function jobText(job: LeafJob): string {
@@ -96,10 +91,11 @@ export function leafPrompt(jobs: LeafJob[], goalNow: string, maxChars: number, c
 	return lines.join("\n");
 }
 
-export function mergePrompt(jobs: MergeJob[]): string {
+// size is the fixed group line size (groupChars). Pairs that fit it are joined without this prompt.
+export function mergePrompt(jobs: MergeJob[], size: number): string {
 	const lines = [
 		"Each item below has two summaries of consecutive parts of a conversation, A and then B.",
-		"For each item, write one summary that covers both. Use at most the max-chars value of the item.",
+		"For each item, write one summary that covers both. Use at most the max-chars value of the item. Do not pad.",
 		"- Keep every exact value from A and B: versions, hashes, seeds, counts, limits, commit IDs, file paths, and commands.",
 		"- Keep each decision with its reason, and keep corrections of earlier conclusions.",
 		"- Leave out narrative first. Leave out a fact only when B makes it obsolete, and then keep the newer value.",
@@ -108,7 +104,7 @@ export function mergePrompt(jobs: MergeJob[]): string {
 		`{"nodes": {${jobs.map((job) => `"${job.key}": "summary"`).join(", ")}}}`,
 	];
 	for (const job of jobs) {
-		lines.push("", `<item key="${job.key}" max-chars="${mergeLimit(job)}">`, "<a>", job.a.summary, "</a>", "<b>", job.b.summary, "</b>", "</item>");
+		lines.push("", `<item key="${job.key}" max-chars="${size}">`, "<a>", job.a.summary, "</a>", "<b>", job.b.summary, "</b>", "</item>");
 	}
 	return lines.join("\n");
 }

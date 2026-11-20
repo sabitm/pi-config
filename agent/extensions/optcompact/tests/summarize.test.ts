@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { LeafJob, MergeJob, RowNode } from "../src/rows.ts";
-import { completeJson, leafLimit, leafPrompt, mergeLimit, mergePrompt, parseJsonObject } from "../src/summarize.ts";
+import { completeJson, leafLimit, leafPrompt, mergePrompt, parseJsonObject } from "../src/summarize.ts";
 
 const node = (n: number, summary: string): RowNode => ({ lo: n, hi: n, firstEntryId: `a${n}`, lastEntryId: `b${n}`, summary });
 
@@ -26,18 +26,11 @@ describe("leafLimit", () => {
 	});
 });
 
-describe("mergeLimit", () => {
-	test("is 60% of both summaries between the floor and the cap", () => {
-		expect(mergeLimit(merge(400, 400))).toBe(600);
-		expect(mergeLimit(merge(1000, 1000))).toBe(1200);
-		expect(mergeLimit(merge(2000, 2000))).toBe(2000);
-	});
-});
-
 describe("prompts", () => {
 	test("each row and each merge item states its limit", () => {
 		expect(leafPrompt([job(64000)], "", 1000000)).toContain('<row key="r1" max-chars="640">');
-		expect(mergePrompt([merge(1000, 1000)])).toContain('<item key="m1" max-chars="1200">');
+		expect(mergePrompt([merge(1000, 1000)], 800)).toContain('<item key="m1" max-chars="800">');
+		expect(mergePrompt([merge(1000, 1000)], 800)).toContain("Do not pad.");
 	});
 
 	test("both prompts put exact values and decision reasons before narrative", () => {
@@ -45,7 +38,7 @@ describe("prompts", () => {
 		expect(leaf).toContain("use at least half of it");
 		expect(leaf).toContain("1. Exact values:");
 		expect(leaf).toContain("2. Decisions, each with its reason");
-		const mergeText = mergePrompt([merge(1000, 1000)]);
+		const mergeText = mergePrompt([merge(1000, 1000)], 800);
 		expect(mergeText).toContain("Keep every exact value from A and B");
 		expect(mergeText).toContain("Leave out narrative first.");
 	});

@@ -8,6 +8,9 @@ import {
 	commitMerges,
 	emptyState,
 	findNode,
+	fitsJoined,
+	groupChars,
+	joinSummaries,
 	groupSpans,
 	labelOf,
 	normalizeFilePath,
@@ -175,17 +178,50 @@ describe("merges", () => {
 		expect(selectMerges(stateOf([leaf(1), leaf(2)]), 10000)).toEqual([]);
 	});
 
-	test("merges the oldest shallow pair first and skips partial nodes", () => {
+	test("merges the most due pair first and skips partial nodes", () => {
 		const state = stateOf([leaf(1), leaf(2), leaf(3), leaf(4), { ...leaf(5), partial: true }]);
 		const jobs = selectMerges(state, 300);
 		expect(jobs.map((job) => [labelOf(job.a), labelOf(job.b)])).toEqual([["#1", "#2"], ["#3", "#4"]]);
 	});
 
-	test("prefers leaf pairs over pairs with a group", () => {
-		const group: RowNode = { ...leaf(1), hi: 2, lastEntryId: "e2b", children: [leaf(1), leaf(2)] };
-		const state = stateOf([group, leaf(3), leaf(4), leaf(5)]);
-		const jobs = selectMerges(state, 400);
-		expect(labelOf(jobs[0].a)).toBe("#3");
+	const group = (lo: number): RowNode => ({ ...leaf(lo), hi: lo + 1, lastEntryId: `e${lo + 1}b`, children: [leaf(lo), leaf(lo + 1)] });
+	const pairs = (jobs: ReturnType<typeof selectMerges>) => jobs.map((job) => [labelOf(job.a), labelOf(job.b)]);
+
+	test("a recent pair of single rows merges before an old pair of groups that is less due", () => {
+		const state = stateOf([group(1), group(3), ...[5, 6, 7, 8, 9, 10, 11, 12].map((n) => leaf(n))]);
+		expect(pairs(selectMerges(state, 1000))).toEqual([["#5", "#6"]]);
+	});
+
+	test("an old pair of groups merges once it is old relative to its size", () => {
+		const state = stateOf([group(1), group(3), leaf(5), leaf(6), leaf(7)]);
+		expect(pairs(selectMerges(state, 500))).toEqual([["#1-2", "#3-4"]]);
+	});
+
+	test("an equally due pair goes to the oldest", () => {
+		const state = stateOf([group(1), leaf(3), leaf(4), leaf(5)]);
+		expect(labelOf(selectMerges(state, 400)[0].a)).toBe("#1-2");
+	});
+
+	test("the estimate counts a merged line at the group size, or joined when the pair fits", () => {
+		// 400-character rows: a pair does not fit in 500, so it saves down to 500 characters.
+		expect(pairs(selectMerges(stateOf([leaf(1), leaf(2), leaf(3)]), 230))).toEqual([["#1", "#2"]]);
+		// 100-character rows join to 201 characters and save only the line prefix, so more pairs are needed.
+		const small = [1, 2, 3, 4, 5, 6].map((n) => leaf(n, "x".repeat(100)));
+		expect(pairs(selectMerges(stateOf(small), 159))).toEqual([["#1", "#2"], ["#3", "#4"], ["#5", "#6"]]);
+	});
+
+	test("groupChars is the budget over 40 lines, from 500 to 2000 characters", () => {
+		expect(groupChars(2000)).toBe(500);
+		expect(groupChars(8000)).toBe(800);
+		expect(groupChars(16000)).toBe(1600);
+		expect(groupChars(40000)).toBe(2000);
+	});
+
+	test("a pair that fits is joined unchanged", () => {
+		const job = { key: "m1", a: leaf(1, "alpha"), b: leaf(2, "beta") };
+		expect(joinSummaries(job)).toBe("alpha\nbeta");
+		expect(fitsJoined(job, 10)).toBe(true);
+		expect(fitsJoined(job, 9)).toBe(false);
 	});
 
 	test("commitMerges replaces the pair with a parent node", () => {
