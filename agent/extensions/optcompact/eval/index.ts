@@ -314,6 +314,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 								grade: grade.grade,
 								reason: grade.reason,
 								exact: exactHit(a.question, answer),
+								sourceAge: session.positions.get(a.question.sourceEntry)! / point.at,
 							});
 						}
 					} catch (error) {

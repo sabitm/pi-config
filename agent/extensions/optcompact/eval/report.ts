@@ -84,6 +84,8 @@ export interface AnswerRecord {
 	grade: Grade;
 	reason: string;
 	exact?: boolean;
+	// Position of the source in the history before the compaction: 0 is the oldest entry, 1 is just before it.
+	sourceAge?: number;
 }
 
 export type ZoomKind = "search" | "search-empty" | "halves" | "page" | "error" | "limit";
@@ -211,6 +213,27 @@ export function renderReport(answers: AnswerRecord[], points: PointRecord[]): st
 			]),
 		),
 	);
+
+	const ageGroups: [string, (age: number) => boolean][] = [
+		["old", (age) => age < 1 / 3],
+		["middle", (age) => age >= 1 / 3 && age < 2 / 3],
+		["recent", (age) => age >= 2 / 3],
+	];
+	const aged = methods.filter((method) => answers.some((a) => a.method === method && a.sourceAge !== undefined));
+	if (aged.length > 0)
+		sections.push(
+			"Score by source age (source before the cut; old is the first third of the history, recent the last third):",
+			table(
+				["method", ...ageGroups.map(([name]) => name)],
+				aged.map((method) => [
+					method,
+					...ageGroups.map(([, inGroup]) => {
+						const t = tally(answers.filter((a) => a.method === method && !a.visibleInKept && a.sourceAge !== undefined && inGroup(a.sourceAge)));
+						return t.asked === 0 ? "-" : `${pct(score(t))} (${t.asked})`;
+					}),
+				]),
+			),
+		);
 
 	const rollup = methods.filter((method) => points.some((p) => p.method === method && p.topRows !== undefined));
 	if (rollup.length > 0)

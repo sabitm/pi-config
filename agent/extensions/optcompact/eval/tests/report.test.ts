@@ -119,6 +119,30 @@ describe("renderReport", () => {
 	});
 });
 
+describe("score by source age", () => {
+	test("splits questions into old, middle, and recent thirds", () => {
+		const record = (grade: AnswerRecord["grade"], sourceAge: number, visibleInKept = false): AnswerRecord => ({
+			method: "m",
+			repeat: 1,
+			point: 1,
+			questionId: "q",
+			type: "rule",
+			visibleInKept,
+			answer: "",
+			grade,
+			reason: "",
+			sourceAge,
+		});
+		const text = renderReport(
+			[record("correct", 0.1), record("wrong", 0.2), record("correct", 0.5), record("partial", 0.9), record("wrong", 0.95, true)],
+			[{ method: "m", repeat: 1, point: 1, summaryChars: 1, compactionTokens: 1, answerTokens: 1, zoomCalls: 0 }],
+		);
+		const sections = text.split("\n\n");
+		const at = sections.findIndex((section) => section.startsWith("Score by source age"));
+		expect(sections[at + 1].split("\n").slice(1).map((line) => line.split(/\s{2,}/))).toEqual([["m", "50% (2)", "100% (1)", "50% (1)"]]);
+	});
+});
+
 describe("zoom calls", () => {
 	test("zoomKind classifies by outcome and output text", () => {
 		expect(zoomKind("x", true, false, true)).toBe("limit");
