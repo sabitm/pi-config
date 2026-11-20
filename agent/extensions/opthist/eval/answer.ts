@@ -1,5 +1,5 @@
 // Answer and judge prompts, and their JSON parsing. No Pi imports.
-import { rowSummaryGuideline, serializeMessage } from "../src/render.ts";
+import { serializeMessage } from "../src/render.ts";
 import { parseJsonObject } from "../src/llm.ts";
 import { grades, type Asked, type Grade } from "./report.ts";
 
@@ -94,13 +94,4 @@ export function parseGrades(text: string, ids: string[]): Map<string, { grade: G
 		result.set(id, { grade: value.grade as Grade, reason: typeof value.reason === "string" ? value.reason : "" });
 	}
 	return result;
-}
-
-// The recorded sessions have no row_summary calls, so the eval writes them after the fact from the raw row.
-// The live main model also sees the earlier conversation, so live summaries can differ.
-export const rowSummarySystemPrompt =
-	"You are an AI coding agent. The messages below are one user request and the work you did for it. Output only the summary text, with no preamble.";
-
-export function rowSummaryPrompt(row: string): string {
-	return ["<row>", row, "</row>", "", rowSummaryGuideline].join("\n");
 }

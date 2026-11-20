@@ -64,6 +64,11 @@ function clip(text: string, max: number | undefined): string {
 
 export const userPrefix = "[User]: ";
 
+export function clipMiddle(text: string, max: number): string {
+	if (text.length <= max) return text;
+	return `${text.slice(0, max / 2)}\n[...]\n${text.slice(-max / 2)}`;
+}
+
 // toolResultMax undefined keeps tool results in full. Thinking blocks and history tool output are always left out.
 export function serializeMessage(message: Message, toolResultMax?: number): string {
 	switch (message.role) {
@@ -165,4 +170,13 @@ export function addNote<T extends { role: string }>(messages: T[], path: string)
 		const summary = (message as { summary?: string }).summary ?? "";
 		return { ...message, summary: `${summary}\n\n${note}` };
 	});
+}
+
+// Backfill and the eval write summaries after the fact from one raw row. The live main model also sees the
+// earlier conversation, so its summaries can differ.
+export const rowSummarySystemPrompt =
+	"You are an AI coding agent. The messages below are one user request and the work you did for it. Output only the summary text, with no preamble.";
+
+export function rowSummaryPrompt(row: string): string {
+	return ["<row>", row, "</row>", "", rowSummaryGuideline].join("\n");
 }

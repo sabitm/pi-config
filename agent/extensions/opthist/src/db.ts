@@ -1,6 +1,6 @@
 // The SQLite history: every session entry, the row summaries, and the views that read the current branch.
 import { DatabaseSync } from "node:sqlite";
-import { contextEdits, type Entry, entryMessage, entryText, oneLine, openToolName, pageToolName, paginate, serializeMessage, userPrefix } from "./render.ts";
+import { clipMiddle, contextEdits, type Entry, entryMessage, entryText, oneLine, openToolName, pageToolName, paginate, serializeMessage, userPrefix } from "./render.ts";
 
 export const pageRows = 20;
 export const partChars = 20000;
@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE TABLE IF NOT EXISTS row_summaries (
 	user_entry_id TEXT PRIMARY KEY,
 	summary TEXT NOT NULL,
-	updated_at TEXT NOT NULL
+	updated_at TEXT NOT NULL,
+	source TEXT NOT NULL DEFAULT 'model'
 );
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE VIEW IF NOT EXISTS branch AS
@@ -54,6 +55,8 @@ const roleOf = (entry: Entry): string | null => {
 	return null;
 };
 
+export type SummarySource = "model" | "backfill";
+
 const timeOf = (timestamp: unknown) => (typeof timestamp === "string" ? timestamp.slice(0, 16).replace("T", " ") : "");
 
 export class History {
@@ -67,6 +70,9 @@ export class History {
 		// WAL lets sqlite3 read while Pi writes.
 		if (path !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL");
 		this.db.exec(schema);
+		// Databases created before the source column existed. Their summaries came from row_summary.
+		const columns = this.db.prepare("PRAGMA table_info(row_summaries)").all();
+		if (!columns.some((column) => column.name === "source")) this.db.exec("ALTER TABLE row_summaries ADD COLUMN source TEXT NOT NULL DEFAULT 'model'");
 		for (const row of this.db.prepare("SELECT id FROM entries").all()) this.known.add(row.id as string);
 	}
 
@@ -91,12 +97,20 @@ export class History {
 		for (const id of added) this.known.add(id);
 	}
 
-	setSummary(userEntryId: string, summary: string) {
+	setSummary(userEntryId: string, summary: string, source: SummarySource = "model") {
 		this.db
 			.prepare(
-				"INSERT INTO row_summaries (user_entry_id, summary, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_entry_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at",
+				"INSERT INTO row_summaries (user_entry_id, summary, updated_at, source) VALUES (?, ?, ?, ?) ON CONFLICT(user_entry_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at, source = excluded.source",
 			)
-			.run(userEntryId, summary, new Date().toISOString());
+			.run(userEntryId, summary, new Date().toISOString(), source);
+	}
+
+	// Newest first. The newest row is left out: the main model writes its summary when it answers.
+	rowsWithoutSummary(): { row: number; userEntryId: string }[] {
+		return this.db
+			.prepare("SELECT row, user_entry_id FROM rows WHERE summary IS NULL AND row < (SELECT MAX(row) FROM rows) ORDER BY row DESC")
+			.all()
+			.map((r) => ({ row: Number(r.row), userEntryId: String(r.user_entry_id) }));
 	}
 
 	rowCount(): number {
@@ -136,21 +150,29 @@ export class History {
 		].join("\n\n");
 	}
 
-	open(row: number, part = 1): string {
+	private rowMessages(row: number, toolResultMax?: number): string {
 		const found = this.db.prepare("SELECT first_seq, last_seq FROM rows WHERE row = ?").get(row);
 		if (!found) throw new Error(`Row #${row} does not exist. Rows: #1 to #${this.rowCount()}. Use ${pageToolName} to see them.`);
 		const parse = (rows: Record<string, unknown>[]) => rows.map((r) => JSON.parse(String(r.json)) as Entry);
 		const edits = contextEdits(parse(this.db.prepare("SELECT json FROM branch WHERE type = 'context_edit'").all()));
 		const entries = parse(this.db.prepare("SELECT json FROM branch WHERE seq BETWEEN ? AND ?").all(found.first_seq, found.last_seq));
-		const text = entries
+		return entries
 			.map((entry) => entryMessage(entry, edits))
-			.map((message) => (message ? serializeMessage(message) : ""))
+			.map((message) => (message ? serializeMessage(message, toolResultMax) : ""))
 			.filter(Boolean)
 			.join("\n\n");
-		const parts = paginate(text, partChars);
+	}
+
+	open(row: number, part = 1): string {
+		const parts = paginate(this.rowMessages(row), partChars);
 		if (!Number.isInteger(part) || part < 1 || part > parts.length) throw new Error(`#${row} has ${parts.length} parts.`);
 		const more = part < parts.length ? ` Call ${openToolName} with part ${part + 1} for more.` : "";
 		return `#${row} raw messages, part ${part} of ${parts.length}.${more}\n\n${parts[part - 1]}`;
+	}
+
+	// Input for a backfill summary: tool results cut to toolResultMax, the whole row cut in the middle to maxChars.
+	rowText(row: number, toolResultMax: number, maxChars: number): string {
+		return clipMiddle(this.rowMessages(row, toolResultMax), maxChars);
 	}
 
 	// For the eval's sql tool. Call readOnly first, so a query cannot change the database.

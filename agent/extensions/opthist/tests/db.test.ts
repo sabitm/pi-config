@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { History } from "../src/db.ts";
 import type { Entry } from "../src/render.ts";
@@ -129,5 +130,52 @@ describe("query", () => {
 		h.readOnly();
 		expect(h.query("SELECT row, request FROM rows WHERE row = 2")).toBe('1 rows.\n{"row":2,"request":"second request"}');
 		expect(() => h.query("DELETE FROM entries")).toThrow("readonly");
+	});
+});
+
+describe("backfill support", () => {
+	test("rowsWithoutSummary lists rows newest first and skips the newest row and summarized rows", () => {
+		const h = history();
+		expect(h.rowsWithoutSummary()).toEqual([
+			{ row: 2, userEntryId: "u2" },
+			{ row: 1, userEntryId: "u1" },
+		]);
+		h.setSummary("u2", "done", "backfill");
+		expect(h.rowsWithoutSummary()).toEqual([{ row: 1, userEntryId: "u1" }]);
+		expect(h.db.prepare("SELECT source FROM row_summaries WHERE user_entry_id = 'u2'").get()!.source).toBe("backfill");
+	});
+
+	test("rowText applies context edits, cuts tool results and long rows, and leaves out history output", () => {
+		const h = new History(":memory:");
+		h.sync(
+			[
+				message("u1", null, "user", "go"),
+				message("t1", "u1", "toolResult", text("z".repeat(50)), { toolName: "bash" }),
+				message("t2", "t1", "toolResult", text("rows"), { toolName: "history_open" }),
+				message("a1", "t2", "assistant", text("original")),
+				{ type: "context_edit", id: "e1", parentId: "a1", targetId: "a1", replacement: { content: text("edited") } },
+			],
+			"e1",
+		);
+		expect(h.rowText(1, 10, 1000)).toBe(
+			`[User]: go\n\n[Tool result bash]: ${"z".repeat(10)}\n[... 40 more characters]\n\n[Tool result history_open]: [history output omitted]\n\n[Assistant]: edited`,
+		);
+		expect(h.rowText(1, 10, 20)).toBe("[User]: go\n[...]\nt]: edited");
+	});
+
+	test("adds the source column to a database that has none, and keeps old summaries as model", () => {
+		const dir = mkdtempSync(join(tmpdir(), "opthist-"));
+		try {
+			const path = join(dir, "old.sqlite");
+			const old = new DatabaseSync(path);
+			old.exec("CREATE TABLE row_summaries (user_entry_id TEXT PRIMARY KEY, summary TEXT NOT NULL, updated_at TEXT NOT NULL)");
+			old.exec("INSERT INTO row_summaries VALUES ('u1', 'old summary', 't')");
+			old.close();
+			const h = new History(path);
+			expect(h.db.prepare("SELECT source FROM row_summaries WHERE user_entry_id = 'u1'").get()!.source).toBe("model");
+			h.close();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

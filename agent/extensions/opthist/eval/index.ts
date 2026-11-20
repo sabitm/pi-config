@@ -15,7 +15,7 @@ import {
 import { Type } from "typebox";
 import { History, pageRows } from "../src/db.ts";
 import { addUsage, completeJson, type Complete } from "../src/llm.ts";
-import { addNote, contextEdits, entryMessage, fileOpsOf, isUserStart, serializeMessage, type Entry as RenderEntry } from "../src/render.ts";
+import { addNote, clipMiddle, contextEdits, entryMessage, fileOpsOf, isUserStart, rowSummaryPrompt, rowSummarySystemPrompt, serializeMessage, type Entry as RenderEntry } from "../src/render.ts";
 import { openTool, pageTool } from "../src/tools.ts";
 import {
 	answerSystemPrompt,
@@ -25,8 +25,6 @@ import {
 	parseAnswers,
 	parseGrades,
 	renderContext,
-	rowSummaryPrompt,
-	rowSummarySystemPrompt,
 } from "./answer.ts";
 import { exactHit, parseQuestions, renderReport, sampleQuestions, selectQuestions, type AnswerRecord, type PointRecord, type Question, type ToolCall } from "./report.ts";
 import { branchBefore, compactionEntry, defaultSlices, loadSession, relink, type Entry, type Session } from "./replay.ts";
@@ -120,8 +118,7 @@ function recordedRows(session: Session): Map<string, { text: string; end: number
 			.map((message) => (message ? serializeMessage(message, toolResultMaxChars) : ""))
 			.filter(Boolean)
 			.join("\n\n");
-		const clipped = text.length <= rowMaxChars ? text : `${text.slice(0, rowMaxChars / 2)}\n[...]\n${text.slice(-rowMaxChars / 2)}`;
-		rows.set(session.branch[start].id, { text: clipped, end });
+		rows.set(session.branch[start].id, { text: clipMiddle(text, rowMaxChars), end });
 	});
 	return rows;
 }
@@ -183,7 +180,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 		history.sync(branch as RenderEntry[], branch.at(-1)?.id ?? null);
 		for (const [id, row] of rows) {
 			const summary = summaries.get(id);
-			if (row.end <= at && summary) history.setSummary(id, summary);
+			if (row.end <= at && summary) history.setSummary(id, summary, "backfill");
 		}
 		history.readOnly();
 		return history;
