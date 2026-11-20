@@ -18,13 +18,14 @@ export function renderContext(messages: unknown[]): string {
 		.join("\n\n");
 }
 
-export function answerSystemPrompt(withHistory: boolean): string {
+export function answerSystemPrompt(withHistory: boolean, guidelines: string[] = []): string {
 	return [
 		"You are an AI coding agent. Your earlier conversation was compacted. The context in the user message is everything you can see now.",
 		...(withHistory
 			? [
 					"Answer each question from this context and from the history database that the compaction summary describes.",
 					"There is no shell. The sql tool runs one read-only SQL query on that database and replaces sqlite3.",
+					...guidelines,
 				]
 			: ["Answer each question from this context only."]),
 		"For a yes/no question, start with the word that answers it (Yes or No), and do not contradict it after.",

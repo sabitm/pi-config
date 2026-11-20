@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import { expect } from "../../tests/expect.ts";
 import { parseAnswers, parseGrades, renderContext } from "../answer.ts";
-import { exactHit, parseQuestions, renderReport, selectQuestions, type AnswerRecord, type Question } from "../report.ts";
+import { exactHit, parseQuestions, renderReport, sampleQuestions, selectQuestions, type AnswerRecord, type Question } from "../report.ts";
 
 const q = (id: string, sourceEntry: string, extra: Partial<Question> = {}): Question => ({
 	id,
@@ -153,5 +153,61 @@ describe("tool calls", () => {
 		const [header, ...rows] = sections[at + 1].split("\n").map((line) => line.split(/\s{2,}/));
 		expect(header).toEqual(["method", "calls", "per answer", "history_open", "history_page", "sql", "error", "limit", "avg result chars"]);
 		expect(rows).toEqual([["h", "4", "4.0", "1", "1", "0", "1", "1", "200"]]);
+	});
+});
+
+describe("sampleQuestions", () => {
+	const asked = ["a", "b", "c", "d", "e"].map((id) => ({ question: q(id, "e1"), visibleInKept: id === "e" }));
+
+	test("picks at most n questions that only the history answers, in asked order", () => {
+		const picked = sampleQuestions(asked, 1, 3);
+		expect(picked.length).toBe(3);
+		expect(picked.some((a) => a.visibleInKept)).toBe(false);
+		expect(picked.map((a) => asked.indexOf(a))).toEqual([...picked.map((a) => asked.indexOf(a))].sort());
+	});
+
+	test("gives the same pick each time and can differ by cut point", () => {
+		const ids = (point: number) => sampleQuestions(asked, point, 2).map((a) => a.question.id);
+		expect(ids(1)).toEqual(ids(1));
+		expect(new Set([1, 2, 3, 4, 5, 6].map((point) => ids(point).join())).size > 1).toBe(true);
+	});
+});
+
+describe("page reading", () => {
+	test("counts newest-first loops, pages read, and scores by whether all pages were read", () => {
+		const record = (questionId: string, grade: AnswerRecord["grade"]): AnswerRecord => ({
+			method: "h",
+			repeat: 1,
+			point: 1,
+			questionId,
+			type: "rule",
+			visibleInKept: false,
+			answer: "",
+			grade,
+			reason: "",
+		});
+		const text = renderReport(
+			[record("q1", "correct"), record("q2", "wrong")],
+			[
+				{
+					method: "h",
+					repeat: 1,
+					point: 1,
+					summaryChars: 1,
+					compactionTokens: 1,
+					answerTokens: 1,
+					toolCalls: 4,
+					pageLoops: [
+						{ questionIds: ["q1"], pages: [null, 2, 1], totalPages: 3 },
+						{ questionIds: ["q2"], pages: [1], totalPages: 3 },
+					],
+				},
+			],
+		);
+		const sections = text.split("\n\n");
+		const at = sections.findIndex((section) => section.startsWith("Page reading"));
+		expect(sections[at + 1].split("\n").slice(1).map((line) => line.split(/\s{2,}/))).toEqual([
+			["h", "2", "50%", "2.0 of 3.0", "50%", "100% (1)", "0% (1)"],
+		]);
 	});
 });

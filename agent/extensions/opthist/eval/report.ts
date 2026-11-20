@@ -68,6 +68,26 @@ export function selectQuestions(questions: Question[], positions: Map<string, nu
 	return asked;
 }
 
+// FNV-1a. Only needs to be stable across runs, not strong.
+function hash(text: string): number {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0;
+	return h;
+}
+
+// At most n questions that only the history answers, the same ones for every method and run. Keeps asked order.
+export function sampleQuestions(asked: Asked[], point: number, n: number): Asked[] {
+	const picked = new Set(
+		asked
+			.filter((a) => !a.visibleInKept)
+			.map((a) => ({ a, h: hash(`${point}#${a.question.id}`) }))
+			.sort((x, y) => x.h - y.h)
+			.slice(0, n)
+			.map((x) => x.a),
+	);
+	return asked.filter((a) => picked.has(a));
+}
+
 export const exactHit = (question: Question, answer: string) =>
 	question.mustContain === undefined
 		? undefined
@@ -97,6 +117,13 @@ export interface ToolCall {
 	chars: number;
 }
 
+// One answer call with tools. pages lists the page argument of each history_page call in order; null is no page.
+export interface PageLoop {
+	questionIds: string[];
+	pages: (number | null)[];
+	totalPages: number;
+}
+
 export interface PointRecord {
 	method: string;
 	repeat: number;
@@ -108,6 +135,7 @@ export interface PointRecord {
 	answerCachedTokens?: number;
 	toolCalls: number;
 	toolLog?: ToolCall[];
+	pageLoops?: PageLoop[];
 }
 
 interface Tally {
@@ -242,6 +270,40 @@ export function renderReport(answers: AnswerRecord[], points: PointRecord[]): st
 						String(log.filter((call) => call.kind === "error").length),
 						String(log.filter((call) => call.kind === "limit").length),
 						String(ok.length === 0 ? 0 : Math.round(ok.reduce((sum, call) => sum + call.chars, 0) / ok.length)),
+					];
+				}),
+			),
+		);
+	}
+
+	const loopMethods = methods.filter((method) => points.some((p) => p.method === method && p.pageLoops !== undefined));
+	if (loopMethods.length > 0) {
+		sections.push(
+			"Page reading (all runs; a loop is one answer call; newest first means the first history_page call had no page):",
+			table(
+				["method", "loops", "newest first", "avg pages read", "read all", "score, read all", "score, read fewer"],
+				loopMethods.map((method) => {
+					const mine = points.filter((p) => p.method === method);
+					const loops = mine.flatMap((p) => (p.pageLoops ?? []).map((loop) => ({ p, loop })));
+					const read = (loop: PageLoop) => new Set(loop.pages.map((page) => page ?? loop.totalPages)).size;
+					const readAll = (loop: PageLoop) => read(loop) >= loop.totalPages;
+					const scoreOf = (all: boolean) => {
+						const keys = new Set(
+							loops.filter(({ loop }) => readAll(loop) === all).flatMap(({ p, loop }) => loop.questionIds.map((id) => `${p.repeat}/${p.point}/${id}`)),
+						);
+						const t = tally(answers.filter((a) => a.method === method && !a.visibleInKept && keys.has(`${a.repeat}/${a.point}/${a.questionId}`)));
+						return t.asked === 0 ? "-" : `${pct(score(t))} (${t.asked})`;
+					};
+					const n = loops.length;
+					const avg = (f: (loop: PageLoop) => number) => (n === 0 ? 0 : loops.reduce((sum, { loop }) => sum + f(loop), 0) / n);
+					return [
+						method,
+						String(n),
+						n === 0 ? "-" : pct(loops.filter(({ loop }) => loop.pages[0] === null).length / n),
+						`${avg(read).toFixed(1)} of ${avg((loop) => loop.totalPages).toFixed(1)}`,
+						n === 0 ? "-" : pct(loops.filter(({ loop }) => readAll(loop)).length / n),
+						scoreOf(true),
+						scoreOf(false),
 					];
 				}),
 			),

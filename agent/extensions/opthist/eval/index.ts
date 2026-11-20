@@ -13,7 +13,7 @@ import {
 	type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { History } from "../src/db.ts";
+import { History, pageRows } from "../src/db.ts";
 import { addUsage, completeJson, type Complete } from "../src/llm.ts";
 import { addNote, contextEdits, entryMessage, fileOpsOf, isUserStart, serializeMessage, type Entry as RenderEntry } from "../src/render.ts";
 import { openTool, pageTool } from "../src/tools.ts";
@@ -28,7 +28,7 @@ import {
 	rowSummaryPrompt,
 	rowSummarySystemPrompt,
 } from "./answer.ts";
-import { exactHit, parseQuestions, renderReport, selectQuestions, type AnswerRecord, type PointRecord, type Question, type ToolCall } from "./report.ts";
+import { exactHit, parseQuestions, renderReport, sampleQuestions, selectQuestions, type AnswerRecord, type PointRecord, type Question, type ToolCall } from "./report.ts";
 import { branchBefore, compactionEntry, defaultSlices, loadSession, relink, type Entry, type Session } from "./replay.ts";
 
 const methods = ["pi-default", "opthist"] as const;
@@ -42,6 +42,9 @@ const rowMaxChars = 200000;
 // The note names this path. The eval database is in memory, and the sql tool stands in for sqlite3.
 const notePath = "history.sqlite";
 
+// Pi puts tool guidelines in the live system prompt, so the eval adds them too.
+const guidelines = [...pageTool.promptGuidelines, ...openTool.promptGuidelines];
+
 const sqlTool = {
 	name: "sql",
 	description: "Run one read-only SQL query on the history database and return the result rows as JSON lines.",
@@ -54,12 +57,14 @@ interface Options {
 	methods: Method[];
 	repeat: number;
 	points?: [number, number];
+	single: boolean;
+	sample?: number;
 }
 
 function parseArgs(args: string, cwd: string): Options {
 	const tokens = args.trim().split(/\s+/).filter(Boolean);
 	const positional: string[] = [];
-	const options: Partial<Options> = { methods: [...methods], repeat: 1 };
+	const options: Partial<Options> = { methods: [...methods], repeat: 1, single: false };
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i];
 		const value = () => {
@@ -82,11 +87,17 @@ function parseArgs(args: string, cwd: string): Options {
 			const to = match[2] === undefined ? from : Number(match[2]);
 			if (from < 1 || to < from) throw new Error("--points range is not valid");
 			options.points = [from, to];
+		} else if (token === "--single") {
+			options.single = true;
+		} else if (token === "--sample") {
+			const n = Number(value());
+			if (!Number.isInteger(n) || n < 1) throw new Error("--sample must be a positive integer");
+			options.sample = n;
 		} else if (token.startsWith("--")) {
 			throw new Error(`unknown option ${token}`);
 		} else positional.push(token);
 	}
-	if (positional.length !== 2) throw new Error("usage: /opthist-eval <session.jsonl> <questions.json> [--methods a,b] [--repeat N] [--points A-B]");
+	if (positional.length !== 2) throw new Error("usage: /opthist-eval <session.jsonl> <questions.json> [--methods a,b] [--repeat N] [--points A-B] [--single] [--sample N]");
 	return { ...(options as Options), session: resolve(cwd, positional[0]), questions: resolve(cwd, positional[1]) };
 }
 
@@ -272,7 +283,8 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 
 			const answerBranch = relink([...branch, entry]);
 			const projected = buildSessionProjection(answerBranch as unknown as SessionEntry[]).messages;
-			const asked = selectQuestions(questions, session.positions, point);
+			const all = selectQuestions(questions, session.positions, point);
+			const asked = options.sample === undefined ? all : sampleQuestions(all, number, options.sample);
 			for (const method of options.methods) {
 				const record: PointRecord = {
 					method,
@@ -285,35 +297,52 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 				};
 				pointRecords.push(record);
 				if (asked.length === 0) continue;
+				const withHistory = method === "opthist";
+				const system = answerSystemPrompt(withHistory, withHistory ? guidelines : []);
+				// --single answers each question in its own call. Otherwise one call answers all of them.
+				const batches = options.single ? asked.map((a) => [a]) : [asked];
+				const given = new Map<string, string>();
+				let history: History | undefined;
 				try {
 					ctx.ui.notify(`opthist-eval: run ${repeat}, ${method}, answering ${asked.length} questions at point ${number}`, "info");
-					const ids = asked.map((a) => a.question.id);
-					const withHistory = method === "opthist";
-					const system = answerSystemPrompt(withHistory);
-					let given: Map<string, string>;
 					if (withHistory) {
 						await ensureSummaries(point.at);
-						const history = buildHistory(answerBranch, point.at);
-						try {
-							const user = answerUserPrompt(renderContext(addNote(projected, notePath) ?? projected), asked);
-							const reply = await answerWithHistory(system, user, history);
-							record.toolCalls = reply.calls;
-							record.toolLog = reply.log;
-							record.answerTokens += reply.usage?.totalTokens ?? 0;
-							record.answerCachedTokens = reply.usage?.cacheRead ?? 0;
-							given = parseAnswers(reply.text, ids);
-						} finally {
-							history.close();
-						}
-					} else {
-						const user = answerUserPrompt(renderContext(projected), asked);
-						// completeJson sends its own system prompt, so route through the answer prompt instead.
-						const reply = await completeJson((_system, u) => completeAnswer(system, u), user, (text) => parseAnswers(text, ids), signal);
-						record.answerTokens += reply.usage?.totalTokens ?? 0;
-						record.answerCachedTokens = reply.usage?.cacheRead ?? 0;
-						given = reply.value;
+						history = buildHistory(answerBranch, point.at);
+						record.toolLog = [];
+						record.pageLoops = [];
 					}
-					const items = asked.map((a) => ({ asked: a, answer: given.get(a.question.id)! }));
+					const totalPages = history ? Math.ceil(history.rowCount() / pageRows) : 0;
+					for (const batch of batches) {
+						const ids = batch.map((a) => a.question.id);
+						try {
+							if (history) {
+								const user = answerUserPrompt(renderContext(addNote(projected, notePath) ?? projected), batch);
+								const reply = await answerWithHistory(system, user, history);
+								record.toolCalls += reply.calls;
+								record.toolLog!.push(...reply.log);
+								const pages = reply.log
+									.filter((call) => call.tool === pageTool.name && call.kind === "ok")
+									.map((call) => ((call.args as { page?: unknown }).page as number | undefined) ?? null);
+								record.pageLoops!.push({ questionIds: ids, pages, totalPages });
+								record.answerTokens += reply.usage?.totalTokens ?? 0;
+								record.answerCachedTokens = (record.answerCachedTokens ?? 0) + (reply.usage?.cacheRead ?? 0);
+								for (const [id, answer] of parseAnswers(reply.text, ids)) given.set(id, answer);
+							} else {
+								const user = answerUserPrompt(renderContext(projected), batch);
+								// completeJson sends its own system prompt, so route through the answer prompt instead.
+								const reply = await completeJson((_system, u) => completeAnswer(system, u), user, (text) => parseAnswers(text, ids), signal);
+								record.answerTokens += reply.usage?.totalTokens ?? 0;
+								record.answerCachedTokens = (record.answerCachedTokens ?? 0) + (reply.usage?.cacheRead ?? 0);
+								for (const [id, answer] of reply.value) given.set(id, answer);
+							}
+						} catch (error) {
+							errors.push(`run ${repeat}, ${method}, point ${number}, ${ids.join(",")}: ${error instanceof Error ? error.message : String(error)}`);
+						}
+					}
+					// Questions whose call failed are not graded.
+					const items = asked.filter((a) => given.has(a.question.id)).map((a) => ({ asked: a, answer: given.get(a.question.id)! }));
+					if (items.length === 0) continue;
+					const ids = items.map((item) => item.asked.question.id);
 					const judged = await completeJson((_system, u) => complete(judgeSystemPrompt, u), judgePrompt(items), (text) => parseGrades(text, ids), signal);
 					record.answerTokens += judged.usage?.totalTokens ?? 0;
 					for (const { asked: a, answer } of items) {
@@ -334,6 +363,8 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 					}
 				} catch (error) {
 					errors.push(`run ${repeat}, ${method}, point ${number}: ${error instanceof Error ? error.message : String(error)}`);
+				} finally {
+					history?.close();
 				}
 			}
 		}
@@ -343,7 +374,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 
 export default function opthistEval(pi: ExtensionAPI) {
 	pi.registerCommand("opthist-eval", {
-		description: "Replay a session and score pi-default and opthist: /opthist-eval <session.jsonl> <questions.json> [--methods a,b] [--repeat N] [--points A-B]",
+		description: "Replay a session and score pi-default and opthist: /opthist-eval <session.jsonl> <questions.json> [--methods a,b] [--repeat N] [--points A-B] [--single] [--sample N]",
 		handler: async (args, ctx) => {
 			try {
 				const options = parseArgs(args, ctx.cwd);
@@ -358,7 +389,7 @@ export default function opthistEval(pi: ExtensionAPI) {
 						"Eval: opthist-eval",
 						`Session: ${options.session}`,
 						`Questions: ${options.questions}`,
-						`Model: ${ctx.model?.provider}/${ctx.model?.id}. Methods: ${options.methods.join(", ")}. Runs finished: ${runs} of ${options.repeat}. Minutes: ${((Date.now() - started) / 60000).toFixed(1)}`,
+						`Model: ${ctx.model?.provider}/${ctx.model?.id}. Methods: ${options.methods.join(", ")}. Runs finished: ${runs} of ${options.repeat}. Single: ${options.single}. Sample: ${options.sample ?? "all"}. Minutes: ${((Date.now() - started) / 60000).toFixed(1)}`,
 						"",
 						renderReport(answers, pointRecords),
 						...(errors.length > 0 ? ["", "Errors:", ...errors] : []),
