@@ -150,7 +150,7 @@ export function noteText(path: string): string {
 	return [
 		"## Full history",
 		`Your full history is in the SQLite database ${path}. It is the single source of truth: it has every message of this session, also the messages before this summary. The summary above is incomplete.`,
-		`- ${pageToolName} shows row summaries, 20 rows per page. A row is one user request and the work done for it. With no page, it shows the newest page. Read pages from the newest to the oldest until you have what you need.`,
+		`- ${pageToolName} shows row summaries, 20 rows per page. A row is one user request and the work done for it. Page 1 has the oldest rows. The last page has the newest rows. First call ${pageToolName} with no page: it shows the newest page and its page number. Then read lower page numbers, one at a time, until you have what you need.`,
 		`- ${openToolName} shows the raw messages of one row. Use it when a summary is not enough.`,
 		`- If these tools are not enough, query the database directly, for example: sqlite3 ${path} "SELECT ...". Tables: entries, row_summaries. Views: branch (entries on the current branch), rows (one line for each row, with its summary).`,
 	].join("\n");

@@ -122,9 +122,10 @@ export class History {
 				FROM rows r JOIN entries e ON e.id = r.user_entry_id WHERE r.row BETWEEN ? AND ? ORDER BY r.row`,
 			)
 			.all(lo, hi);
-		const older = p > 1 ? `Older rows are on pages 1 to ${p - 1}.` : "This is the oldest page.";
+		const label = [...(p === pages ? ["newest"] : []), ...(p === 1 ? ["oldest"] : [])].join(" and ");
+		const older = p > 1 ? `Older rows: page ${p - 1}.` : "No older rows.";
 		return [
-			`Page ${p} of ${pages}: rows #${lo} to #${hi}, oldest first. ${older} Use ${openToolName} with a row number for its raw messages.`,
+			`Page ${p} of ${pages}${label ? ` (${label})` : ""}: rows #${lo} to #${hi}. ${older} Use ${openToolName} with a row number for its raw messages.`,
 			...rows.map((row) =>
 				[
 					`#${row.row} (${timeOf(row.timestamp)})`,

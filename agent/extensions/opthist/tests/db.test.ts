@@ -88,21 +88,22 @@ describe("page", () => {
 		h.setSummary("u1", "did the first thing");
 		h.setSummary("u1", "did the first thing, version 2");
 		const page = h.page();
-		expect(page).toContain("Page 1 of 1: rows #1 to #3, oldest first. This is the oldest page.");
+		expect(page).toContain("Page 1 of 1 (newest and oldest): rows #1 to #3. No older rows.");
 		expect(page).toContain("#1 (2026-11-20 10:00)\nRequest: first request\nSummary: did the first thing, version 2");
 		expect(page).toContain("#2 (2026-11-20 10:00)\nRequest: second request\nSummary: (no summary)");
 		expect(h.rowOf("u2")).toBe(2);
 	});
 
-	test("splits rows into pages of 20 and shows the newest page by default", () => {
+	test("splits rows into pages of 20, numbered from the oldest, and shows the newest page by default", () => {
 		const h = new History(":memory:");
 		const list: Entry[] = [];
-		for (let i = 1; i <= 25; i++) list.push(message(`u${i}`, i === 1 ? null : `u${i - 1}`, "user", i === 25 ? "x".repeat(400) : `request ${i}`));
-		h.sync(list, "u25");
-		expect(h.page()).toContain("Page 2 of 2: rows #21 to #25, oldest first. Older rows are on pages 1 to 1.");
+		for (let i = 1; i <= 45; i++) list.push(message(`u${i}`, i === 1 ? null : `u${i - 1}`, "user", i === 45 ? "x".repeat(400) : `request ${i}`));
+		h.sync(list, "u45");
+		expect(h.page()).toContain("Page 3 of 3 (newest): rows #41 to #45. Older rows: page 2.");
 		expect(h.page()).toContain(`Request: ${"x".repeat(300)}...`);
-		expect(h.page(1)).toContain("Page 1 of 2: rows #1 to #20");
-		expect(() => h.page(3)).toThrow("Pages: 1 to 2");
+		expect(h.page(2)).toContain("Page 2 of 3: rows #21 to #40. Older rows: page 1.");
+		expect(h.page(1)).toContain("Page 1 of 3 (oldest): rows #1 to #20. No older rows.");
+		expect(() => h.page(4)).toThrow("Pages: 1 to 3");
 	});
 });
 
