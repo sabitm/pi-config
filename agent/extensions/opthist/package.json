@@ -1,0 +1,10 @@
+{
+	"name": "opthist",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Session history in SQLite, read back as pages of row summaries and raw rows",
+	"scripts": {
+		"test": "node --test tests/*.test.ts eval/tests/*.test.ts"
+	}
+}
