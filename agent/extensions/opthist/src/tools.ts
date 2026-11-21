@@ -15,13 +15,13 @@ export const pageTool = {
 	name: pageToolName,
 	label: "History page",
 	description:
-		"Show one page of row summaries from the history database, 20 rows per page. A row is one user request and the work done for it. Pages are numbered from the oldest: page 1 has the oldest rows, the last page has the newest. With no page, shows the newest page. Rows inside a page are oldest first.",
+		"Show one page of row summaries from the history database, 20 rows per page, newest first. A row is one user request and the work done for it. Page 1 is the newest. Higher pages are older.",
 	promptSnippet: "Read row summaries from the history database, one page at a time",
 	promptGuidelines: [
-		`Use ${pageToolName} when you need earlier context that you cannot see, for example after a compaction. Call it with no page first for the newest page, then read lower page numbers.`,
+		`Use ${pageToolName} when you need earlier context that you cannot see, for example after a compaction. Read page 1 first, then higher pages for older rows.`,
 	],
 	parameters: Type.Object({
-		page: Type.Optional(Type.Integer({ minimum: 1, description: "Page number, where 1 is the oldest. Leave it out for the newest page." })),
+		page: Type.Optional(Type.Integer({ minimum: 1, description: "Page number. 1 is the newest. Higher pages are older. Default 1." })),
 	}),
 };
 

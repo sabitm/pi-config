@@ -89,22 +89,25 @@ describe("page", () => {
 		h.setSummary("u1", "did the first thing");
 		h.setSummary("u1", "did the first thing, version 2");
 		const page = h.page();
-		expect(page).toContain("Page 1 of 1 (newest and oldest): rows #1 to #3. No older rows.");
+		expect(page).toContain("Page 1 of 1 (newest and oldest): rows #3 to #1, newest first. No older rows.");
 		expect(page).toContain("#1 (2026-11-20 10:00)\nRequest: first request\nSummary: did the first thing, version 2");
 		expect(page).toContain("#2 (2026-11-20 10:00)\nRequest: second request\nSummary: (no summary)");
 		expect(h.rowOf("u2")).toBe(2);
 	});
 
-	test("splits rows into pages of 20, numbered from the oldest, and shows the newest page by default", () => {
+	test("splits rows into pages of 20, with page 1 the newest, and shows page 1 by default", () => {
 		const h = new History(":memory:");
 		const list: Entry[] = [];
 		for (let i = 1; i <= 45; i++) list.push(message(`u${i}`, i === 1 ? null : `u${i - 1}`, "user", i === 45 ? "x".repeat(400) : `request ${i}`));
 		h.sync(list, "u45");
-		expect(h.page()).toContain("Page 3 of 3 (newest): rows #41 to #45. Older rows: page 2.");
-		expect(h.page()).toContain(`Request: ${"x".repeat(300)}...`);
-		expect(h.page(2)).toContain("Page 2 of 3: rows #21 to #40. Older rows: page 1.");
-		expect(h.page(1)).toContain("Page 1 of 3 (oldest): rows #1 to #20. No older rows.");
-		expect(() => h.page(4)).toThrow("Pages: 1 to 3");
+		const first = h.page();
+		expect(first).toContain("Page 1 of 3 (newest): rows #45 to #26, newest first. Older rows: page 2.");
+		expect(first).toContain(`Request: ${"x".repeat(300)}...`);
+		expect(first.indexOf("\n#45 (") < first.indexOf("\n#26 (")).toBe(true);
+		expect(first).not.toContain("\n#25 (");
+		expect(h.page(2)).toContain("Page 2 of 3: rows #25 to #6, newest first. Older rows: page 3.");
+		expect(h.page(3)).toContain("Page 3 of 3 (oldest): rows #5 to #1, newest first. No older rows.");
+		expect(() => h.page(4)).toThrow("Pages: 1 (newest) to 3 (oldest).");
 	});
 });
 

@@ -319,7 +319,7 @@ async function runEval(options: Options, ctx: ExtensionContext, signal: AbortSig
 								record.toolLog!.push(...reply.log);
 								const pages = reply.log
 									.filter((call) => call.tool === pageTool.name && call.kind === "ok")
-									.map((call) => ((call.args as { page?: unknown }).page as number | undefined) ?? null);
+									.map((call) => ((call.args as { page?: unknown }).page as number | undefined) ?? 1);
 								record.pageLoops!.push({ questionIds: ids, pages, totalPages });
 								record.answerTokens += reply.usage?.totalTokens ?? 0;
 								record.answerCachedTokens = (record.answerCachedTokens ?? 0) + (reply.usage?.cacheRead ?? 0);

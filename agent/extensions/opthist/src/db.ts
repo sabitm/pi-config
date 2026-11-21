@@ -122,24 +122,24 @@ export class History {
 		return found ? Number(found.row) : undefined;
 	}
 
-	page(page?: number): string {
+	// Page 1 holds the newest rows, so page contents move when a row is added. Row numbers do not move.
+	page(p = 1): string {
 		const count = this.rowCount();
 		if (count === 0) return "The history has no rows yet.";
 		const pages = Math.ceil(count / pageRows);
-		const p = page ?? pages;
-		if (!Number.isInteger(p) || p < 1 || p > pages) throw new Error(`Page ${p} does not exist. Pages: 1 to ${pages}.`);
-		const lo = (p - 1) * pageRows + 1;
-		const hi = Math.min(p * pageRows, count);
+		if (!Number.isInteger(p) || p < 1 || p > pages) throw new Error(`Page ${p} does not exist. Pages: 1 (newest) to ${pages} (oldest).`);
+		const hi = count - (p - 1) * pageRows;
+		const lo = Math.max(1, hi - pageRows + 1);
 		const rows = this.db
 			.prepare(
 				`SELECT r.row, r.timestamp, r.request, r.summary, length(e.text) - ${userPrefix.length} > ${requestChars} AS clipped
-				FROM rows r JOIN entries e ON e.id = r.user_entry_id WHERE r.row BETWEEN ? AND ? ORDER BY r.row`,
+				FROM rows r JOIN entries e ON e.id = r.user_entry_id WHERE r.row BETWEEN ? AND ? ORDER BY r.row DESC`,
 			)
 			.all(lo, hi);
-		const label = [...(p === pages ? ["newest"] : []), ...(p === 1 ? ["oldest"] : [])].join(" and ");
-		const older = p > 1 ? `Older rows: page ${p - 1}.` : "No older rows.";
+		const label = [...(p === 1 ? ["newest"] : []), ...(p === pages ? ["oldest"] : [])].join(" and ");
+		const older = p < pages ? `Older rows: page ${p + 1}.` : "No older rows.";
 		return [
-			`Page ${p} of ${pages}${label ? ` (${label})` : ""}: rows #${lo} to #${hi}. ${older} Use ${openToolName} with a row number for its raw messages.`,
+			`Page ${p} of ${pages}${label ? ` (${label})` : ""}: rows #${hi} to #${lo}, newest first. ${older} Use ${openToolName} with a row number for its raw messages.`,
 			...rows.map((row) =>
 				[
 					`#${row.row} (${timeOf(row.timestamp)})`,

@@ -31,5 +31,7 @@ describe("addNote", () => {
 		expect(result[1]).toBe(messages[1]);
 		expect(messages[0].summary).toBe("S");
 		expect(noteText("/db")).toContain("sqlite3 /db");
+		expect(noteText("/db")).toContain("Read page 1, then page 2 and later");
+		expect(noteText("/db")).toContain("Before your first query, read the schema: SELECT name, sql FROM sqlite_master");
 	});
 });

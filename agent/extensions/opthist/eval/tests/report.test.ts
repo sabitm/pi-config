@@ -198,8 +198,8 @@ describe("page reading", () => {
 					answerTokens: 1,
 					toolCalls: 4,
 					pageLoops: [
-						{ questionIds: ["q1"], pages: [null, 2, 1], totalPages: 3 },
-						{ questionIds: ["q2"], pages: [1], totalPages: 3 },
+						{ questionIds: ["q1"], pages: [1, 2, 3], totalPages: 3 },
+						{ questionIds: ["q2"], pages: [3], totalPages: 3 },
 					],
 				},
 			],

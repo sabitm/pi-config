@@ -117,10 +117,10 @@ export interface ToolCall {
 	chars: number;
 }
 
-// One answer call with tools. pages lists the page argument of each history_page call in order; null is no page.
+// One answer call with tools. pages lists the page read by each history_page call in order. Page 1 is the newest.
 export interface PageLoop {
 	questionIds: string[];
-	pages: (number | null)[];
+	pages: number[];
 	totalPages: number;
 }
 
@@ -279,13 +279,13 @@ export function renderReport(answers: AnswerRecord[], points: PointRecord[]): st
 	const loopMethods = methods.filter((method) => points.some((p) => p.method === method && p.pageLoops !== undefined));
 	if (loopMethods.length > 0) {
 		sections.push(
-			"Page reading (all runs; a loop is one answer call; newest first means the first history_page call had no page):",
+			"Page reading (all runs; a loop is one answer call; newest first means the first page read was page 1):",
 			table(
 				["method", "loops", "newest first", "avg pages read", "read all", "score, read all", "score, read fewer"],
 				loopMethods.map((method) => {
 					const mine = points.filter((p) => p.method === method);
 					const loops = mine.flatMap((p) => (p.pageLoops ?? []).map((loop) => ({ p, loop })));
-					const read = (loop: PageLoop) => new Set(loop.pages.map((page) => page ?? loop.totalPages)).size;
+					const read = (loop: PageLoop) => new Set(loop.pages).size;
 					const readAll = (loop: PageLoop) => read(loop) >= loop.totalPages;
 					const scoreOf = (all: boolean) => {
 						const keys = new Set(
@@ -299,7 +299,7 @@ export function renderReport(answers: AnswerRecord[], points: PointRecord[]): st
 					return [
 						method,
 						String(n),
-						n === 0 ? "-" : pct(loops.filter(({ loop }) => loop.pages[0] === null).length / n),
+						n === 0 ? "-" : pct(loops.filter(({ loop }) => loop.pages[0] === 1).length / n),
 						`${avg(read).toFixed(1)} of ${avg((loop) => loop.totalPages).toFixed(1)}`,
 						n === 0 ? "-" : pct(loops.filter(({ loop }) => readAll(loop)).length / n),
 						scoreOf(true),
