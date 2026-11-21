@@ -1,5 +1,5 @@
 import { describe, test } from "node:test";
-import { addNote, entryText, noteText, serializeMessage } from "../src/render.ts";
+import { addNote, entryText, noteText, rowSummaryGuideline, rowSummaryPrompt, serializeMessage } from "../src/render.ts";
 import { expect } from "./expect.ts";
 
 describe("serializeMessage", () => {
@@ -33,5 +33,17 @@ describe("addNote", () => {
 		expect(noteText("/db")).toContain("sqlite3 /db");
 		expect(noteText("/db")).toContain("Read page 1, then page 2 and later");
 		expect(noteText("/db")).toContain("Before your first query, read the schema: SELECT name, sql FROM sqlite_master");
+	});
+});
+
+describe("row summary prompts", () => {
+	test("the backfill prompt has the content rules but no tool call", () => {
+		const prompt = rowSummaryPrompt("[User]: hi");
+		expect(prompt).toContain("Write: the request, what you did");
+		expect(prompt).not.toContain("row_summary");
+	});
+
+	test("the live guideline still tells the model to call row_summary", () => {
+		expect(rowSummaryGuideline).toContain("call row_summary once. Write: the request");
 	});
 });

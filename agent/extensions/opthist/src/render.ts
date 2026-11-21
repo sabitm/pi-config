@@ -4,7 +4,8 @@ export const rowSummaryToolName = "row_summary";
 export const pageToolName = "history_page";
 export const openToolName = "history_open";
 export const summaryMaxChars = 1500;
-export const rowSummaryGuideline = `Before your final answer to each user request, call ${rowSummaryToolName} once. Write: the request, what you did, the results, exact values (paths, versions, numbers, names), and decisions with their reasons. At most ${summaryMaxChars} characters.`;
+export const rowSummaryContent = `Write: the request, what you did, the results, exact values (paths, versions, numbers, names), and decisions with their reasons. At most ${summaryMaxChars} characters.`;
+export const rowSummaryGuideline = `Before your final answer to each user request, call ${rowSummaryToolName} once. ${rowSummaryContent}`;
 const historyTools = new Set([pageToolName, openToolName]);
 
 type Part = { type: string; text?: string; name?: string; arguments?: unknown };
@@ -178,5 +179,6 @@ export const rowSummarySystemPrompt =
 	"You are an AI coding agent. The messages below are one user request and the work you did for it. Output only the summary text, with no preamble.";
 
 export function rowSummaryPrompt(row: string): string {
-	return ["<row>", row, "</row>", "", rowSummaryGuideline].join("\n");
+	// Only the content rules: the call instruction makes a model without tools write the call as text.
+	return ["<row>", row, "</row>", "", rowSummaryContent].join("\n");
 }
