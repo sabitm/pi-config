@@ -1,13 +1,15 @@
 // The SQLite history: every session entry, the row summaries, and the views that read the current branch.
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { clipMiddle, contextEdits, type Entry, entryMessage, entryText, oneLine, openToolName, pageToolName, paginate, serializeMessage, userPrefix } from "./render.ts";
 
 export const pageRows = 20;
 export const partChars = 20000;
 const requestChars = 300;
+const firstRequestChars = 150;
 const queryMaxRows = 100;
 const queryMaxChars = 20000;
 
@@ -83,6 +85,52 @@ export function resolveSession(value: string | undefined, current: { id: string;
 	return resolve(path) === resolve(current.path) ? undefined : path;
 }
 
+const changedAt = (path: string): number => Math.max(...[path, `${path}-wal`].filter(existsSync).map((file) => statSync(file).mtimeMs));
+
+// history_sessions: the current session first, then the other databases in dir by last change, newest first.
+// Only the databases on the requested page are opened.
+export function listSessions(dir: string, current: History, p = 1): string {
+	const currentPath = resolve(current.path);
+	const others = (existsSync(dir) ? readdirSync(dir) : [])
+		.filter((name) => name.endsWith(".sqlite"))
+		.map((name) => join(dir, name))
+		.filter((path) => resolve(path) !== currentPath)
+		.map((path) => ({ path, changed: changedAt(path) }))
+		.sort((a, b) => b.changed - a.changed)
+		.map(({ path }) => path);
+	const count = others.length + 1;
+	const pages = Math.ceil(count / pageRows);
+	if (!Number.isInteger(p) || p < 1 || p > pages) throw new Error(`Page ${p} does not exist. Pages: 1 (newest) to ${pages} (oldest).`);
+	const start = (p - 1) * pageRows;
+	const lines: string[] = [];
+	for (let i = start; i < Math.min(count, start + pageRows); i++) {
+		if (i === 0) {
+			lines.push(current.overview(true));
+			continue;
+		}
+		const path = others[i - 1];
+		try {
+			// A -wal file means a running Pi process, or one that stopped without a checkpoint: rows can be in it.
+			const other = new History(path, { readOnly: true, immutable: !existsSync(`${path}-wal`) });
+			try {
+				lines.push(other.overview(false));
+			} finally {
+				other.close();
+			}
+		} catch (error) {
+			lines.push(`${path} | cannot read: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+	const label = [...(p === 1 ? ["newest"] : []), ...(p === pages ? ["oldest"] : [])].join(" and ");
+	const older = p < pages ? `Older sessions: page ${p + 1}.` : "No older sessions.";
+	return [
+		`Page ${p} of ${pages}${label ? ` (${label})` : ""}: sessions ${start + 1} to ${start + lines.length} of ${count}, this session first, then by last change. ${older}`,
+		`Databases: ${join(dir, "<session ID>.sqlite")}. Use a session ID as the session parameter of ${pageToolName} and ${openToolName}.`,
+		"",
+		...lines,
+	].join("\n");
+}
+
 const timeOf = (timestamp: unknown) => (typeof timestamp === "string" ? timestamp.slice(0, 16).replace("T", " ") : "");
 
 export class History {
@@ -91,10 +139,17 @@ export class History {
 	private known = new Set<string>();
 
 	// readOnly is for another session's database: it may belong to a running Pi process, so it is never changed.
-	constructor(path: string, options: { readOnly?: boolean } = {}) {
+	// immutable is for a database that no process writes: SQLite then creates no -wal and -shm files, but it also
+	// ignores an existing -wal file and fails or reads wrong data if the file changes during the read.
+	constructor(path: string, options: { readOnly?: boolean; immutable?: boolean } = {}) {
 		this.path = path;
 		if (options.readOnly) {
-			this.db = new DatabaseSync(path, { readOnly: true });
+			let source: string | URL = path;
+			if (options.immutable) {
+				source = pathToFileURL(resolve(path));
+				source.searchParams.set("immutable", "1");
+			}
+			this.db = new DatabaseSync(source, { readOnly: true });
 			const found = new Set(this.db.prepare("SELECT type || ':' || name AS object FROM sqlite_master").all().map((row) => String(row.object)));
 			if (requiredObjects.some((object) => !found.has(object))) {
 				this.db.close();
@@ -153,6 +208,21 @@ export class History {
 	sessionLine(): string {
 		const meta = new Map(this.db.prepare("SELECT key, value FROM meta").all().map((row) => [String(row.key), String(row.value)]));
 		return `Session ${meta.get("session_id") ?? this.path} (cwd: ${meta.get("cwd") ?? "unknown"})`;
+	}
+
+	// One line for history_sessions.
+	overview(current: boolean): string {
+		const meta = new Map(this.db.prepare("SELECT key, value FROM meta").all().map((row) => [String(row.key), String(row.value)]));
+		const last = this.db.prepare("SELECT MAX(timestamp) AS t FROM entries").get()?.t;
+		const first = this.db.prepare("SELECT request FROM rows WHERE row = 1").get();
+		const request = first ? oneLine(String(first.request ?? "")) : "";
+		return [
+			`${meta.get("session_id") ?? this.path}${current ? " (this session)" : ""}`,
+			`cwd: ${meta.get("cwd") ?? "unknown"}`,
+			`${this.rowCount()} rows`,
+			`last: ${timeOf(last) || "unknown"}`,
+			first ? `first request: "${request.length > firstRequestChars ? `${request.slice(0, firstRequestChars)}...` : request}"` : "no rows",
+		].join(" | ");
 	}
 
 	rowCount(): number {

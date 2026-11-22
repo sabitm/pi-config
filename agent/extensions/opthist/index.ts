@@ -6,9 +6,9 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { History, resolveSession } from "./src/db.ts";
+import { History, listSessions, resolveSession } from "./src/db.ts";
 import { addNote, type Entry, isUserStart, rowSummaryPrompt, rowSummarySystemPrompt } from "./src/render.ts";
-import { openTool, pageTool, rowSummaryTool } from "./src/tools.ts";
+import { openTool, pageTool, rowSummaryTool, sessionsTool } from "./src/tools.ts";
 
 const databaseDir = join(getAgentDir(), "opthist");
 const backfillToolResultChars = 2000;
@@ -111,6 +111,13 @@ export default function opthist(pi: ExtensionAPI) {
 		...openTool,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			return textResult(readHistory(ctx, params.session, (target) => target.open(params.row, params.part ?? 1)));
+		},
+	});
+
+	pi.registerTool({
+		...sessionsTool,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return textResult(listSessions(databaseDir, sync(ctx), params.page));
 		},
 	});
 

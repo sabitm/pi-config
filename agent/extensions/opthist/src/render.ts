@@ -3,6 +3,7 @@
 export const rowSummaryToolName = "row_summary";
 export const pageToolName = "history_page";
 export const openToolName = "history_open";
+export const sessionsToolName = "history_sessions";
 export const summaryMaxChars = 1500;
 export const rowSummaryContent = `Write: the request, what you did, the results, exact values (paths, versions, numbers, names), and decisions with their reasons. At most ${summaryMaxChars} characters.`;
 export const rowSummaryGuideline = `Before your final answer to each user request, call ${rowSummaryToolName} once. ${rowSummaryContent}`;

@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
-import { History, resolveSession } from "../src/db.ts";
+import { History, listSessions, resolveSession } from "../src/db.ts";
 import type { Entry } from "../src/render.ts";
 import { expect } from "./expect.ts";
 
@@ -236,5 +236,58 @@ describe("other sessions", () => {
 			plain.close();
 			expect(() => new History(path, { readOnly: true })).toThrow(`${path} is not an opthist database.`);
 		});
+	});
+
+	const closedDatabase = (path: string, id: string, first = "first request") => {
+		const h = new History(path);
+		h.sync([message("u1", null, "user", first), message("a1", "u1", "assistant", text("done"))], "a1", { session_id: id, cwd: `/p/${id}` });
+		h.close();
+	};
+
+	test("history_sessions lists this session first, then the others by last change, and does not add files", () => {
+		withDir((dir) => {
+			const current = new History(join(dir, "cur.sqlite"));
+			current.sync(entries(), "u3", { session_id: "cur-id", cwd: "/p/cur" });
+			closedDatabase(join(dir, "old.sqlite"), "old-id");
+			closedDatabase(join(dir, "new.sqlite"), "new-id", `long ${"x".repeat(200)}`);
+			writeFileSync(join(dir, "broken.sqlite"), "not a database");
+			writeFileSync(join(dir, "notes.txt"), "");
+			utimesSync(join(dir, "broken.sqlite"), 500, 500);
+			utimesSync(join(dir, "old.sqlite"), 1000, 1000);
+			utimesSync(join(dir, "new.sqlite"), 2000, 2000);
+			const lines = listSessions(dir, current).split("\n");
+			expect(lines[0]).toBe("Page 1 of 1 (newest and oldest): sessions 1 to 4 of 4, this session first, then by last change. No older sessions.");
+			expect(lines[1]).toBe(`Databases: ${join(dir, "<session ID>.sqlite")}. Use a session ID as the session parameter of history_page and history_open.`);
+			expect(lines[3]).toBe('cur-id (this session) | cwd: /p/cur | 3 rows | last: 2026-11-20 10:00 | first request: "first request"');
+			expect(lines[4]).toBe(`new-id | cwd: /p/new-id | 1 rows | last: 2026-11-20 10:00 | first request: "long ${"x".repeat(145)}..."`);
+			expect(lines[5]).toBe('old-id | cwd: /p/old-id | 1 rows | last: 2026-11-20 10:00 | first request: "first request"');
+			expect(lines[6]).toContain(`${join(dir, "broken.sqlite")} | cannot read: `);
+			expect(lines.length).toBe(7);
+			for (const name of ["old", "new"]) for (const end of ["-wal", "-shm"]) expect(existsSync(join(dir, `${name}.sqlite${end}`))).toBe(false);
+			current.close();
+		});
+	});
+
+	test("history_sessions pages 20 sessions at a time", () => {
+		withDir((dir) => {
+			for (let i = 0; i < 21; i++) {
+				closedDatabase(join(dir, `s${i}.sqlite`), `s${i}`);
+				utimesSync(join(dir, `s${i}.sqlite`), 1000 + i, 1000 + i);
+			}
+			const current = new History(":memory:");
+			expect(listSessions(dir, current)).toContain("sessions 1 to 20 of 22, this session first, then by last change. Older sessions: page 2.");
+			const second = listSessions(dir, current, 2).split("\n");
+			expect(second[0]).toBe("Page 2 of 2 (oldest): sessions 21 to 22 of 22, this session first, then by last change. No older sessions.");
+			expect(second.slice(3).map((line) => line.split(" ")[0])).toEqual(["s1", "s0"]);
+			expect(() => listSessions(dir, current, 3)).toThrow("Page 3 does not exist. Pages: 1 (newest) to 2 (oldest).");
+			current.close();
+		});
+	});
+
+	test("history_sessions works without a database directory and with an empty session", () => {
+		const current = new History(":memory:");
+		const lines = listSessions(join(tmpdir(), "opthist-surely-missing-dir"), current).split("\n");
+		expect(lines[3]).toBe(":memory: (this session) | cwd: unknown | 0 rows | last: unknown | no rows");
+		current.close();
 	});
 });

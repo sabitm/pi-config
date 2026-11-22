@@ -1,6 +1,6 @@
 // Tool definitions shared by the extension and the eval.
 import { Type } from "typebox";
-import { openToolName, pageToolName, rowSummaryGuideline, rowSummaryToolName, summaryMaxChars } from "./render.ts";
+import { openToolName, pageToolName, rowSummaryGuideline, rowSummaryToolName, sessionsToolName, summaryMaxChars } from "./render.ts";
 
 const sessionParameter = Type.Optional(
 	Type.String({ description: "Session ID, a unique start of one, or a path to an opthist .sqlite file. Leave empty for this session." }),
@@ -29,6 +29,18 @@ export const pageTool = {
 	parameters: Type.Object({
 		page: Type.Optional(Type.Integer({ minimum: 1, description: "Page number. 1 is the newest. Higher pages are older. Default 1." })),
 		session: sessionParameter,
+	}),
+};
+
+export const sessionsTool = {
+	name: sessionsToolName,
+	label: "History sessions",
+	description:
+		"List the session history databases, 20 sessions per page: this session first, then the others by last change, newest first. Each line has the session ID, cwd, row count, time of the last entry, and the first user request.",
+	promptSnippet: "List the session history databases, this session first",
+	promptGuidelines: [`Use ${sessionsToolName} to find a session ID for the session parameter, or to see the ID of this session.`],
+	parameters: Type.Object({
+		page: Type.Optional(Type.Integer({ minimum: 1, description: "Page number. 1 is the newest. Higher pages are older. Default 1." })),
 	}),
 };
 
