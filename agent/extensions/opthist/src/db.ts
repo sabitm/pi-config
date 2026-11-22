@@ -1,4 +1,7 @@
 // The SQLite history: every session entry, the row summaries, and the views that read the current branch.
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { clipMiddle, contextEdits, type Entry, entryMessage, entryText, oneLine, openToolName, pageToolName, paginate, serializeMessage, userPrefix } from "./render.ts";
 
@@ -57,6 +60,29 @@ const roleOf = (entry: Entry): string | null => {
 
 export type SummarySource = "model" | "backfill";
 
+const requiredObjects = ["table:entries", "table:row_summaries", "table:meta", "view:branch", "view:rows"];
+
+// Returns the database path that a session value names, or undefined for the current session.
+// A value with "/", a leading "~", or a ".sqlite" end is a path. Otherwise it is a session ID or a unique start of one.
+export function resolveSession(value: string | undefined, current: { id: string; path: string }, databaseDir: string, cwd: string): string | undefined {
+	const v = value?.trim() ?? "";
+	if (!v || v === current.id) return undefined;
+	let path: string;
+	if (v.includes("/") || v.startsWith("~") || v.endsWith(".sqlite")) {
+		path = resolve(cwd, v.startsWith("~") ? join(homedir(), v.slice(1)) : v);
+		if (!existsSync(path)) throw new Error(`${path} does not exist.`);
+	} else {
+		const names = existsSync(databaseDir) ? readdirSync(databaseDir).filter((name) => name.endsWith(".sqlite")) : [];
+		const matches = names.includes(`${v}.sqlite`) ? [`${v}.sqlite`] : names.filter((name) => name.startsWith(v));
+		if (matches.length === 0) throw new Error(`No opthist database for session "${v}" in ${databaseDir}.`);
+		if (matches.length > 1) {
+			throw new Error(`Session "${v}" matches several databases: ${matches.map((name) => name.slice(0, -".sqlite".length)).join(", ")}. Give more characters.`);
+		}
+		path = join(databaseDir, matches[0]);
+	}
+	return resolve(path) === resolve(current.path) ? undefined : path;
+}
+
 const timeOf = (timestamp: unknown) => (typeof timestamp === "string" ? timestamp.slice(0, 16).replace("T", " ") : "");
 
 export class History {
@@ -64,8 +90,18 @@ export class History {
 	readonly path: string;
 	private known = new Set<string>();
 
-	constructor(path: string) {
+	// readOnly is for another session's database: it may belong to a running Pi process, so it is never changed.
+	constructor(path: string, options: { readOnly?: boolean } = {}) {
 		this.path = path;
+		if (options.readOnly) {
+			this.db = new DatabaseSync(path, { readOnly: true });
+			const found = new Set(this.db.prepare("SELECT type || ':' || name AS object FROM sqlite_master").all().map((row) => String(row.object)));
+			if (requiredObjects.some((object) => !found.has(object))) {
+				this.db.close();
+				throw new Error(`${path} is not an opthist database.`);
+			}
+			return;
+		}
 		this.db = new DatabaseSync(path);
 		// WAL lets sqlite3 read while Pi writes.
 		if (path !== ":memory:") this.db.exec("PRAGMA journal_mode = WAL");
@@ -111,6 +147,12 @@ export class History {
 			.prepare("SELECT row, user_entry_id FROM rows WHERE summary IS NULL AND row < (SELECT MAX(row) FROM rows) ORDER BY row DESC")
 			.all()
 			.map((r) => ({ row: Number(r.row), userEntryId: String(r.user_entry_id) }));
+	}
+
+	// The first line of results from another session's database, so the reader knows which session it is.
+	sessionLine(): string {
+		const meta = new Map(this.db.prepare("SELECT key, value FROM meta").all().map((row) => [String(row.key), String(row.value)]));
+		return `Session ${meta.get("session_id") ?? this.path} (cwd: ${meta.get("cwd") ?? "unknown"})`;
 	}
 
 	rowCount(): number {

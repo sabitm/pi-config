@@ -6,7 +6,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { History } from "./src/db.ts";
+import { History, resolveSession } from "./src/db.ts";
 import { addNote, type Entry, isUserStart, rowSummaryPrompt, rowSummarySystemPrompt } from "./src/render.ts";
 import { openTool, pageTool, rowSummaryTool } from "./src/tools.ts";
 
@@ -86,17 +86,31 @@ export default function opthist(pi: ExtensionAPI) {
 		},
 	});
 
+	// Another session's database opens read-only for one call and closes after it.
+	const readHistory = (ctx: ExtensionContext, session: string | undefined, read: (target: History) => string): string => {
+		const current = sync(ctx);
+		const manager = ctx.sessionManager;
+		const path = resolveSession(session, { id: manager.getSessionId(), path: current.path }, databaseDir, manager.getCwd());
+		if (!path) return read(current);
+		const other = new History(path, { readOnly: true });
+		try {
+			return `${other.sessionLine()}\n\n${read(other)}`;
+		} finally {
+			other.close();
+		}
+	};
+
 	pi.registerTool({
 		...pageTool,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return textResult(sync(ctx).page(params.page));
+			return textResult(readHistory(ctx, params.session, (target) => target.page(params.page)));
 		},
 	});
 
 	pi.registerTool({
 		...openTool,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return textResult(sync(ctx).open(params.row, params.part ?? 1));
+			return textResult(readHistory(ctx, params.session, (target) => target.open(params.row, params.part ?? 1)));
 		},
 	});
 

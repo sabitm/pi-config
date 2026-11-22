@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
-import { History } from "../src/db.ts";
+import { History, resolveSession } from "../src/db.ts";
 import type { Entry } from "../src/render.ts";
 import { expect } from "./expect.ts";
 
@@ -180,5 +180,61 @@ describe("backfill support", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("other sessions", () => {
+	const withDir = (run: (dir: string) => void) => {
+		const dir = mkdtempSync(join(tmpdir(), "opthist-"));
+		try {
+			run(dir);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	};
+
+	test("resolveSession finds a full ID, a unique start, and paths, and treats the current session as empty", () => {
+		withDir((dir) => {
+			for (const name of ["01a1dd45-aaaa.sqlite", "01a20065-bbbb.sqlite", "notes.txt"]) writeFileSync(join(dir, name), "");
+			const current = { id: "01a20065-bbbb", path: join(dir, "01a20065-bbbb.sqlite") };
+			expect(resolveSession(undefined, current, dir, "/proj")).toBeUndefined();
+			expect(resolveSession(" ", current, dir, "/proj")).toBeUndefined();
+			expect(resolveSession("01a20065-bbbb", current, dir, "/proj")).toBeUndefined();
+			expect(resolveSession("01a20065", current, dir, "/proj")).toBeUndefined();
+			expect(resolveSession("01a1dd45-aaaa", current, dir, "/proj")).toBe(join(dir, "01a1dd45-aaaa.sqlite"));
+			expect(resolveSession("01a1d", current, dir, "/proj")).toBe(join(dir, "01a1dd45-aaaa.sqlite"));
+			expect(() => resolveSession("01a", current, dir, "/proj")).toThrow("matches several databases: 01a1dd45-aaaa, 01a20065-bbbb");
+			expect(() => resolveSession("ffff", current, dir, "/proj")).toThrow('No opthist database for session "ffff"');
+			expect(resolveSession("01a1dd45-aaaa.sqlite", current, dir, dir)).toBe(join(dir, "01a1dd45-aaaa.sqlite"));
+			expect(resolveSession(join(dir, "01a1dd45-aaaa.sqlite"), current, dir, "/proj")).toBe(join(dir, "01a1dd45-aaaa.sqlite"));
+			expect(() => resolveSession("./missing.sqlite", current, dir, dir)).toThrow(`${join(dir, "missing.sqlite")} does not exist.`);
+			expect(() => resolveSession("~/opthist-surely-missing.sqlite", current, dir, "/proj")).toThrow(`${join(homedir(), "opthist-surely-missing.sqlite")} does not exist.`);
+		});
+	});
+
+	test("opens another database read-only, shows its session line, and refuses writes", () => {
+		withDir((dir) => {
+			const path = join(dir, "other.sqlite");
+			const owner = new History(path);
+			owner.sync(entries(), "u3", { session_id: "other-id", cwd: "/other/project" });
+			owner.setSummary("u1", "first summary");
+			owner.close();
+			const other = new History(path, { readOnly: true });
+			expect(other.sessionLine()).toBe("Session other-id (cwd: /other/project)");
+			expect(other.page()).toContain("Summary: first summary");
+			expect(other.open(2)).toContain("[Assistant]: edited answer");
+			expect(() => other.setSummary("u2", "x")).toThrow("readonly");
+			other.close();
+		});
+	});
+
+	test("refuses a file that is not an opthist database", () => {
+		withDir((dir) => {
+			const path = join(dir, "plain.sqlite");
+			const plain = new DatabaseSync(path);
+			plain.exec("CREATE TABLE t (x)");
+			plain.close();
+			expect(() => new History(path, { readOnly: true })).toThrow(`${path} is not an opthist database.`);
+		});
 	});
 });
